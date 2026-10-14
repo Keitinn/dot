@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod game_session;
 pub mod pet;
 pub mod storage;
 

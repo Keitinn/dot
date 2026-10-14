@@ -25,6 +25,10 @@ pub fn find_snack(id: &str) -> Option<&'static Snack> {
     SNACKS.iter().find(|s| s.id == id)
 }
 
+/// Mini game coins paid per local day. Passive income, streak bonuses and
+/// snack purchases are outside this cap.
+pub const DAILY_GAME_COIN_CAP: u64 = 30;
+
 /// Coins earned for a finished mini game. Games have no stake, so playing
 /// never costs coins: a pet with 0 coins can still earn by playing or waiting.
 pub fn game_reward(game: &str, outcome: &str, moves: Option<u32>) -> Result<u64, String> {

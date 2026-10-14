@@ -24,6 +24,12 @@ pub struct GameStats {
     pub total_coins_earned: u64,
     #[serde(default)]
     pub last_passive_time: Option<i64>,
+
+    // Mini game coins paid on `game_coins_date` (local "YYYY-MM-DD"), for the daily cap
+    #[serde(default)]
+    pub game_coins_today: u64,
+    #[serde(default)]
+    pub game_coins_date: Option<String>,
 }
 
 /// One coin every 10 minutes while the pet is alive.
@@ -47,6 +53,8 @@ impl GameStats {
             coins: 0,
             total_coins_earned: 0,
             last_passive_time: None,
+            game_coins_today: 0,
+            game_coins_date: None,
         }
     }
 
@@ -191,6 +199,8 @@ mod tests {
         let stats: GameStats = serde_json::from_str(json).unwrap();
         assert_eq!(stats.coins, 0);
         assert!(stats.last_passive_time.is_none());
+        assert_eq!(stats.game_coins_today, 0);
+        assert!(stats.game_coins_date.is_none());
     }
 
     #[test]
