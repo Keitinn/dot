@@ -317,13 +317,16 @@ export class PetRenderer {
 
     /**
      * The companion mood to show on the adult, or null for the usual eyes.
-     * A new face blinks once unless motion is reduced.
+     * A new face blinks once unless motion is reduced. A still face (the
+     * farewell's closed eyes) neither blinks nor breathes.
      */
-    setFace(mood, { reducedMotion = false } = {}) {
-        if (shouldBlink(this.face, mood, reducedMotion)) {
+    setFace(mood, { reducedMotion = false, still = false } = {}) {
+        if (still) {
+            this.blinkUntil = 0;
+        } else if (shouldBlink(this.face, mood, reducedMotion)) {
             this.blinkUntil = performance.now() + BLINK_MS;
         }
         this.face = mood;
-        this.stillAdult = mood !== null && reducedMotion;
+        this.stillAdult = mood !== null && (reducedMotion || still);
     }
 }

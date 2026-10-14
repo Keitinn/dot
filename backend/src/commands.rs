@@ -174,20 +174,23 @@ pub fn put_to_sleep(state: State<AppState>) -> Result<ActionResult, String> {
     care_command(&state, CareKind::Sleep, GameStats::record_sleep)
 }
 
+/// NEW PET / NEW FRIEND?: a new egg with no Bond. Coins, achievements and
+/// the streak carry over (R10).
+fn revive(pet: &mut PetState, companion: &mut CompanionState, stats: &mut GameStats) -> Vec<Achievement> {
+    crate::pet::lifecycle::revive(pet);
+    companion.reset_for_new_pet();
+    stats.record_revive();
+    achievements::check_achievements(stats, pet)
+}
+
 #[tauri::command]
 pub fn revive_pet(state: State<AppState>) -> Result<ActionResult, String> {
     let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
-    crate::pet::lifecycle::revive(&mut pet);
-    save_pet(&pet);
-    {
-        let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
-        companion.reset_for_new_pet();
-        save_companion(&companion);
-    }
-
+    let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
-    stats.record_revive();
-    let new_achievements = achievements::check_achievements(&mut stats, &pet);
+    let new_achievements = revive(&mut pet, &mut companion, &mut stats);
+    save_pet(&pet);
+    save_companion(&companion);
     save_stats(&stats);
 
     Ok(ActionResult::from(&pet, new_achievements))
@@ -538,6 +541,36 @@ mod tests {
 
         assert!(!pet.is_alive);
         assert_eq!(companion.today.n_care, 0);
+    }
+
+    #[test]
+    fn new_friend_after_an_adult_died_starts_the_bond_over_but_keeps_coins_achievements_and_streak() {
+        let (mut pet, mut companion) = adult();
+        companion.record_open(&pet, now(), today());
+        companion.record_care(&pet, 10, today());
+        companion.bond = 420;
+        companion.lines.recent_ids.push("greet_1".to_string());
+        companion.onboarding = companion::Onboarding::Yes;
+        pet.is_alive = false;
+        let mut stats = GameStats::new();
+        stats.add_coins(42);
+        stats.unlocked.push("first_feed".to_string());
+        stats.current_streak = 5;
+        stats.longest_streak = 9;
+        let raised = stats.total_pets_raised;
+
+        revive(&mut pet, &mut companion, &mut stats);
+
+        assert!(pet.is_alive);
+        assert_eq!(pet.stage, EvolutionStage::Egg);
+        assert_eq!(companion.bond, 0);
+        assert_eq!(companion.today, Default::default());
+        assert_eq!(companion.lines, Default::default());
+        assert_eq!(companion.onboarding, companion::Onboarding::Unseen);
+        assert_eq!(stats.coins, 42);
+        assert!(stats.unlocked.contains(&"first_feed".to_string()));
+        assert_eq!((stats.current_streak, stats.longest_streak), (5, 9));
+        assert_eq!(stats.total_pets_raised, raised + 1);
     }
 
     #[test]

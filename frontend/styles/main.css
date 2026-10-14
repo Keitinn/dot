@@ -272,6 +272,36 @@ body {
     font-size: 9px;
 }
 
+/* Farewell (an adult that died): the pet stays in view with its eyes closed,
+   one line and the button under it. Stats and the rest are put away, as
+   GAME OVER covers them. */
+#app.farewell #settings-container,
+#app.farewell #achievements-overlay,
+#app.farewell #games-overlay,
+#app.farewell #shop-overlay,
+#app.farewell #companion-bubble,
+#app.farewell #stats-container,
+#app.farewell #info-container,
+#app.farewell #actions-container {
+    display: none;
+}
+
+#app.farewell #pet-container {
+    border-bottom: none;
+}
+
+#app.farewell #death-overlay {
+    position: static;
+    width: auto;
+    height: auto;
+    border: none;
+    background: #c8d4c0;
+}
+
+#app.farewell #death-content {
+    padding: 0 20px 24px;
+}
+
 /* Achievements Overlay */
 #achievements-overlay {
     position: absolute;

@@ -3,7 +3,7 @@ import { PetAPI } from './api.js';
 import { GamesUI } from './games.js';
 import { ShopUI } from './shop.js';
 import { CompanionUI } from './companion.js';
-import { statusText } from './companion-logic.js';
+import { FAREWELL, deathView, statusText } from './companion-logic.js';
 
 const FEED_COOLDOWN_SECS = 1800; // 30 minutes
 const PLAY_COOLDOWN_SECS = 1200; // 20 minutes
@@ -122,14 +122,29 @@ class DotApp {
 
         // Handle death state
         const deathOverlay = document.getElementById('death-overlay');
+        const death = deathView(this.petState);
+        // The farewell keeps the pet in view and hides the rest, stats included
+        document.getElementById('app').classList.toggle('farewell', death === FAREWELL);
 
-        if (!this.petState.is_alive) {
+        if (death) {
+            this.showDeath(death);
             deathOverlay.classList.remove('hidden');
             this.setButtonStates(true, true, true);
         } else {
             deathOverlay.classList.add('hidden');
             this.updateButtonStates();
         }
+    }
+
+    showDeath(view) {
+        const icon = document.getElementById('death-icon');
+        const hint = document.getElementById('death-hint');
+        icon.textContent = view.icon || '';
+        icon.hidden = !view.icon;
+        document.getElementById('death-title').textContent = view.title;
+        hint.textContent = view.hint || '';
+        hint.hidden = !view.hint;
+        document.getElementById('revive-btn').textContent = view.button;
     }
 
     updateButtonStates() {
