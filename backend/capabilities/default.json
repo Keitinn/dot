@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The popover may only be moved by dragging its top strip",
+  "windows": ["main"],
+  "permissions": ["core:window:allow-start-dragging"]
+}

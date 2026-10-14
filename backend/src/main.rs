@@ -14,6 +14,11 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // A menu bar app: no Dock icon. LSUIElement in Info.plist is overridden when the event loop
+            // starts (tao sets the Regular policy), so the policy is set here as well
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // Initialize app state
             let app_state = AppState::new();
             app.manage(app_state);
