@@ -1,8 +1,10 @@
 # dot
 
-[![CI](https://github.com/tooyipjee/dot/actions/workflows/ci.yml/badge.svg)](https://github.com/tooyipjee/dot/actions/workflows/ci.yml)
+[![CI](https://github.com/Keitinn/dot/actions/workflows/ci.yml/badge.svg)](https://github.com/Keitinn/dot/actions/workflows/ci.yml)
 
 A cute Tamagotchi-style virtual pet that lives in your macOS menu bar.
+
+This is a fork of [tooyipjee/dot](https://github.com/tooyipjee/dot) (MIT, Copyright (c) 2025 Jason Too).
 
 ## Features
 
@@ -25,7 +27,7 @@ brew install --cask dot
 
 ### Download
 
-Grab the latest `.dmg` from [Releases](https://github.com/tooyipjee/dot/releases).
+Grab the latest `.dmg` from [Releases](https://github.com/Keitinn/dot/releases).
 
 ### Gatekeeper bypass
 
@@ -44,7 +46,7 @@ Or right-click the app → Open → confirm.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Clone and build
-git clone https://github.com/tooyipjee/dot.git
+git clone https://github.com/Keitinn/dot.git
 cd dot
 npm install
 npm run build
@@ -76,7 +78,7 @@ npm run build
 
 - **Frontend**: Vanilla JavaScript, HTML5 Canvas
 - **Backend**: Rust with Tauri v2
-- **Persistence**: JSON file storage (`~/.config/dot/`)
+- **Persistence**: JSON file storage (`~/Library/Application Support/dot/`)
 
 ## License
 
