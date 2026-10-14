@@ -4,6 +4,7 @@ import { GamesUI } from './games.js';
 import { ShopUI } from './shop.js';
 import { CompanionUI } from './companion.js';
 import { FAREWELL, deathView, statusText } from './companion-logic.js';
+import { shouldRun } from './visibility.js';
 
 const FEED_COOLDOWN_SECS = 1800; // 30 minutes
 const PLAY_COOLDOWN_SECS = 1200; // 20 minutes
@@ -15,6 +16,7 @@ class DotApp {
         this.petState = null;
         this.gameStats = null;
         this.updateInterval = null;
+        this.running = false;
         this.toastTimeout = null;
 
         this.init();
@@ -35,6 +37,10 @@ class DotApp {
         );
         // Before the first await, so the focus that opens the popover is not missed
         this.companion = new CompanionUI(this.api, this.renderer, () => this.petState, () => this.updateUI());
+        // After the companion's, so its open() starts before the refresh on focus
+        window.addEventListener('focus', () => this.syncRunning());
+        window.addEventListener('blur', () => this.syncRunning());
+        document.addEventListener('visibilitychange', () => this.syncRunning());
 
         // Trophy / achievements button
         document.getElementById('trophy-btn').addEventListener('click', (e) => {
@@ -64,19 +70,42 @@ class DotApp {
         await this.fetchStats();
         await this.showLoadWarning();
         this.companion.start();
+        // The window usually starts hidden; then nothing runs until it is opened
+        this.syncRunning();
+    }
 
-        // Start render loop
-        this.renderer.start((deltaTime) => {
+    /** Draws and polls only while the popover is shown; the Rust tick runs regardless. */
+    syncRunning() {
+        const run = shouldRun({ hidden: document.hidden, focused: document.hasFocus() });
+        if (run === this.running) return;
+        this.running = run;
+        if (run) {
+            this.resume();
+        } else {
+            this.pause();
+        }
+    }
+
+    resume() {
+        // At once, so the popover never stays on what it showed when it was closed
+        this.refresh();
+        this.renderer.start(() => {
             if (this.petState) {
                 this.renderer.render(this.petState);
             }
         });
+        this.updateInterval = setInterval(() => this.refresh(), 5000);
+    }
 
-        // Poll for state updates every 5 seconds
-        this.updateInterval = setInterval(() => {
-            this.updatePetState();
-            this.fetchStats();
-        }, 5000);
+    pause() {
+        this.renderer.stop();
+        clearInterval(this.updateInterval);
+        this.updateInterval = null;
+    }
+
+    refresh() {
+        this.updatePetState();
+        this.fetchStats();
     }
 
     async updatePetState() {
