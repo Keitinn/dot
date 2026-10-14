@@ -24,6 +24,12 @@ pub struct GameStats {
     pub total_coins_earned: u64,
     #[serde(default)]
     pub last_passive_time: Option<i64>,
+
+    // Mini game coins paid on `game_coins_date` (local "YYYY-MM-DD"), for the daily cap
+    #[serde(default)]
+    pub game_coins_today: u64,
+    #[serde(default)]
+    pub game_coins_date: Option<String>,
 }
 
 /// One coin every 10 minutes while the pet is alive.
@@ -47,12 +53,29 @@ impl GameStats {
             coins: 0,
             total_coins_earned: 0,
             last_passive_time: None,
+            game_coins_today: 0,
+            game_coins_date: None,
         }
     }
 
     pub fn add_coins(&mut self, amount: u64) {
         self.coins = self.coins.saturating_add(amount);
         self.total_coins_earned = self.total_coins_earned.saturating_add(amount);
+    }
+
+    /// Pays mini game coins, but no more than `cap` per local day (`today` is "YYYY-MM-DD").
+    /// Returns the coins actually paid. The count resets only when the date moves
+    /// forward, so turning the clock back does not refill the cap.
+    pub fn add_game_coins(&mut self, amount: u64, today: &str, cap: u64) -> u64 {
+        let is_new_day = self.game_coins_date.as_deref().is_none_or(|d| today > d);
+        if is_new_day {
+            self.game_coins_today = 0;
+            self.game_coins_date = Some(today.to_string());
+        }
+        let paid = amount.min(cap.saturating_sub(self.game_coins_today));
+        self.game_coins_today += paid;
+        self.add_coins(paid);
+        paid
     }
 
     /// Returns false (and changes nothing) if there are not enough coins.
@@ -191,6 +214,8 @@ mod tests {
         let stats: GameStats = serde_json::from_str(json).unwrap();
         assert_eq!(stats.coins, 0);
         assert!(stats.last_passive_time.is_none());
+        assert_eq!(stats.game_coins_today, 0);
+        assert!(stats.game_coins_date.is_none());
     }
 
     #[test]

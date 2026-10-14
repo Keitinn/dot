@@ -9,6 +9,8 @@ import {
     isBlackjack,
     dealerPlay,
     judgeBlackjack,
+    minPlayMs,
+    rewardText,
 } from './games-logic.js';
 
 const HAND_ICON = { rock: '✊', paper: '✋', scissors: '✌️' };
@@ -22,6 +24,8 @@ const RESULT_TEXT = {
 };
 
 const STORE_KEY = 'dot.games.v1';
+// The session clock starts on the backend slightly after Date.now() here.
+const REPORT_MARGIN_MS = 300;
 
 function loadRecord() {
     try {
@@ -98,19 +102,30 @@ export class GamesUI {
         this.body.innerHTML = '';
     }
 
-    async reward(game, outcome, moves = null) {
-        try {
-            const r = await this.api.reportGameResult(game, outcome, moves);
-            this.onReward(r);
-            return r.earned;
-        } catch (e) {
-            console.error('Failed to report game result:', e);
-            return 0;
-        }
+    // Opens a server-side session; its token is needed to earn coins for this game.
+    begin(game) {
+        const token = this.api.startGame(game).catch((e) => {
+            console.error('Failed to start game:', e);
+            return null;
+        });
+        return { token, startedAt: Date.now() };
     }
 
-    coinText(earned) {
-        return earned > 0 ? ` +$${earned}` : '';
+    // Resolves to the RewardResult, or null when nothing was paid.
+    async reward(session, game, outcome, moves = null) {
+        try {
+            const token = await session.token;
+            if (!token) return null;
+            // The backend rejects reports that come in before the minimum play time.
+            const wait = minPlayMs(game, moves) + REPORT_MARGIN_MS - (Date.now() - session.startedAt);
+            if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+            const r = await this.api.reportGameResult(token, game, outcome, moves);
+            this.onReward(r);
+            return r;
+        } catch (e) {
+            console.error('Failed to report game result:', e);
+            return null;
+        }
     }
 
     bump(game, key) {
@@ -145,10 +160,20 @@ export class GamesUI {
         };
         updateScore();
 
+        // Each throw is one game: report it with the current session and open the next.
+        // The hands stay locked until the report lands, so throws cannot outpace the
+        // backend's minimum play time or pile up pending sessions.
+        let session = this.begin('janken');
         const choices = el('div', 'game-row');
+        const lock = (locked) => {
+            for (const b of choices.children) b.disabled = locked;
+        };
         for (const hand of JANKEN_HANDS) {
             choices.appendChild(
                 button(`${HAND_ICON[hand]}\n${HAND_LABEL[hand]}`, async () => {
+                    const played = session;
+                    session = this.begin('janken');
+                    lock(true);
                     const cpuHand = randomHand();
                     const outcome = judgeJanken(hand, cpuHand);
                     me.textContent = HAND_ICON[hand];
@@ -157,8 +182,9 @@ export class GamesUI {
                     result.textContent = RESULT_TEXT[outcome];
                     this.bump('janken', outcome);
                     updateScore();
-                    const earned = await this.reward('janken', outcome);
-                    result.textContent = RESULT_TEXT[outcome] + this.coinText(earned);
+                    const r = await this.reward(played, 'janken', outcome);
+                    result.textContent = RESULT_TEXT[outcome] + rewardText(r);
+                    lock(false);
                 }, 'game-btn janken-choice')
             );
         }
@@ -171,6 +197,7 @@ export class GamesUI {
     showMemory() {
         this.setScreen('MEMORY', true);
         const rec = (this.record.memory = this.record.memory || {});
+        const session = this.begin('memory');
         let cards = createMemoryDeck();
         let moves = 0;
         let busy = false;
@@ -215,8 +242,8 @@ export class GamesUI {
                     rec.best = moves;
                     saveRecord(this.record);
                 }
-                this.reward('memory', 'clear', moves).then((earned) => {
-                    result.textContent = `CLEAR! ${moves} MOVES${this.coinText(earned)}`;
+                this.reward(session, 'memory', 'clear', moves).then((r) => {
+                    result.textContent = `CLEAR! ${moves} MOVES${rewardText(r)}`;
                 });
             }
             render();
@@ -237,6 +264,8 @@ export class GamesUI {
         let player;
         let dealer;
         let over;
+        let session;
+        let hand = 0;
 
         const dealerRow = el('div', 'bj-hand');
         const playerRow = el('div', 'bj-hand');
@@ -276,12 +305,15 @@ export class GamesUI {
             result.textContent = base;
             this.bump('blackjack', outcome);
             render();
-            this.reward('blackjack', outcome).then((earned) => {
-                result.textContent = base + this.coinText(earned);
+            const thisHand = hand;
+            this.reward(session, 'blackjack', outcome).then((r) => {
+                if (thisHand === hand) result.textContent = base + rewardText(r);
             });
         };
 
         const deal = () => {
+            session = this.begin('blackjack');
+            hand++;
             deck = createBlackjackDeck();
             player = [deck.pop(), deck.pop()];
             dealer = [deck.pop(), deck.pop()];

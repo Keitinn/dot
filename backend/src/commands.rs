@@ -1,7 +1,8 @@
 use tauri::{AppHandle, State};
 use serde::Serialize;
-use chrono::Utc;
-use crate::{AppState, pet::{PetState, GameStats, Achievement, achievements, economy}};
+use std::time::Instant;
+use chrono::{Local, Utc};
+use crate::{AppState, game_session, pet::{PetState, GameStats, Achievement, achievements, economy}};
 use crate::pet::state::{Activity, FEED_COOLDOWN_SECS, PLAY_COOLDOWN_SECS};
 use crate::storage;
 
@@ -192,21 +193,35 @@ pub fn get_snacks() -> Vec<economy::Snack> {
 pub struct RewardResult {
     pub earned: u64,
     pub coins: u64,
+    /// The daily cap for mini game coins cut this reward.
+    pub capped: bool,
+}
+
+/// Called by the UI when a mini game starts. The token must be passed back
+/// to `report_game_result` to earn coins.
+#[tauri::command]
+pub fn start_game(state: State<AppState>, game: String) -> Result<String, String> {
+    let mut sessions = state.game_sessions.lock().map_err(|e| e.to_string())?;
+    sessions.start(&game, Instant::now())
 }
 
 /// Called by the UI when a mini game ends. Games never cost coins.
 #[tauri::command]
 pub fn report_game_result(
     state: State<AppState>,
+    token: String,
     game: String,
     outcome: String,
     moves: Option<u32>,
 ) -> Result<RewardResult, String> {
-    let earned = economy::game_reward(&game, &outcome, moves)?;
+    let mut sessions = state.game_sessions.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
-    stats.add_coins(earned);
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let reward = game_session::claim_reward(
+        &mut sessions, &mut stats, &token, &game, &outcome, moves, Instant::now(), &today,
+    )?;
     save_stats(&stats);
-    Ok(RewardResult { earned, coins: stats.coins })
+    Ok(RewardResult { earned: reward.earned, coins: stats.coins, capped: reward.capped })
 }
 
 #[tauri::command]
