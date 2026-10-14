@@ -16,7 +16,15 @@ pub const MEMORY_MIN_MOVES: u32 = 4;
 
 /// Shortest believable time from `start_game` to the report, or `None` for an unknown game.
 pub fn min_play_time(game: &str, moves: Option<u32>) -> Option<Duration> {
-    todo!("{game} {moves:?}")
+    match game {
+        "janken" => Some(Duration::from_secs(1)),
+        "blackjack" => Some(Duration::from_secs(3)),
+        "memory" => {
+            let by_moves = Duration::from_millis(500) * moves.unwrap_or(0);
+            Some(by_moves.max(Duration::from_secs(4)))
+        }
+        _ => None,
+    }
 }
 
 struct PendingGame {
@@ -40,12 +48,52 @@ impl GameSessions {
 
     /// Opens a session for `game` and returns its token.
     pub fn start(&mut self, game: &str, now: Instant) -> Result<String, String> {
-        todo!("{game} {now:?}")
+        if min_play_time(game, None).is_none() {
+            return Err(format!("unknown game: {game}"));
+        }
+        self.pending
+            .retain(|_, p| now.saturating_duration_since(p.started_at) <= SESSION_TTL);
+        while self.pending.len() >= MAX_PENDING {
+            let Some(oldest) = self
+                .pending
+                .iter()
+                .min_by_key(|(_, p)| p.started_at)
+                .map(|(token, _)| token.clone())
+            else {
+                break;
+            };
+            self.pending.remove(&oldest);
+        }
+
+        let token = uuid::Uuid::new_v4().to_string();
+        self.pending.insert(
+            token.clone(),
+            PendingGame { game: game.to_string(), started_at: now },
+        );
+        Ok(token)
     }
 
     /// Consumes the token (whether or not the check passes) and checks the report against it.
     pub fn finish(&mut self, token: &str, game: &str, moves: Option<u32>, now: Instant) -> Result<(), String> {
-        todo!("{token} {game} {moves:?} {now:?}")
+        let session = self
+            .pending
+            .remove(token)
+            .ok_or_else(|| "unknown or used game token".to_string())?;
+        let played = now.saturating_duration_since(session.started_at);
+        if played > SESSION_TTL {
+            return Err("game token expired".to_string());
+        }
+        if session.game != game {
+            return Err(format!("token was issued for {}, not {game}", session.game));
+        }
+        if game == "memory" && moves.unwrap_or(0) < MEMORY_MIN_MOVES {
+            return Err(format!("memory needs at least {MEMORY_MIN_MOVES} moves"));
+        }
+        let min = min_play_time(game, moves).ok_or_else(|| format!("unknown game: {game}"))?;
+        if played < min {
+            return Err("game finished too quickly".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -69,7 +117,10 @@ pub fn claim_reward(
     now: Instant,
     today: &str,
 ) -> Result<GameReward, String> {
-    todo!("{token} {game} {outcome} {moves:?} {now:?} {today} {} {}", sessions.pending_count(), stats.coins)
+    sessions.finish(token, game, moves, now)?;
+    let reward = economy::game_reward(game, outcome, moves)?;
+    let earned = stats.add_game_coins(reward, today, economy::DAILY_GAME_COIN_CAP);
+    Ok(GameReward { earned, capped: earned < reward })
 }
 
 #[cfg(test)]

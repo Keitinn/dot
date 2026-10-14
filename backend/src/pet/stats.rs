@@ -63,6 +63,21 @@ impl GameStats {
         self.total_coins_earned = self.total_coins_earned.saturating_add(amount);
     }
 
+    /// Pays mini game coins, but no more than `cap` per local day (`today` is "YYYY-MM-DD").
+    /// Returns the coins actually paid. The count resets only when the date moves
+    /// forward, so turning the clock back does not refill the cap.
+    pub fn add_game_coins(&mut self, amount: u64, today: &str, cap: u64) -> u64 {
+        let is_new_day = self.game_coins_date.as_deref().is_none_or(|d| today > d);
+        if is_new_day {
+            self.game_coins_today = 0;
+            self.game_coins_date = Some(today.to_string());
+        }
+        let paid = amount.min(cap.saturating_sub(self.game_coins_today));
+        self.game_coins_today += paid;
+        self.add_coins(paid);
+        paid
+    }
+
     /// Returns false (and changes nothing) if there are not enough coins.
     pub fn try_spend(&mut self, amount: u64) -> bool {
         if self.coins < amount {

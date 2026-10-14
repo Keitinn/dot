@@ -71,6 +71,7 @@ fn main() {
             commands::get_game_stats,
             commands::get_achievements,
             commands::get_snacks,
+            commands::start_game,
             commands::report_game_result,
             commands::buy_snack,
             commands::get_load_warning,

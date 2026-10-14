@@ -5,6 +5,7 @@ pub mod storage;
 
 use std::path::Path;
 use std::sync::Mutex;
+use game_session::GameSessions;
 use pet::PetState;
 use pet::GameStats;
 use storage::LoadOutcome;
@@ -18,6 +19,8 @@ pub struct AppState {
     pub pet: Mutex<PetState>,
     pub stats: Mutex<GameStats>,
     pub load_warning: Mutex<Option<String>>,
+    /// Started mini games waiting for their result. Not saved.
+    pub game_sessions: Mutex<GameSessions>,
 }
 
 impl AppState {
@@ -50,6 +53,7 @@ impl AppState {
             pet: Mutex::new(pet),
             stats: Mutex::new(stats),
             load_warning: Mutex::new(load_warning),
+            game_sessions: Mutex::new(GameSessions::new()),
         }
     }
 
