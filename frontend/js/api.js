@@ -29,6 +29,18 @@ export class PetAPI {
         return await invoke('get_achievements');
     }
 
+    async getSnacks() {
+        return await invoke('get_snacks');
+    }
+
+    async reportGameResult(game, outcome, moves = null) {
+        return await invoke('report_game_result', { game, outcome, moves });
+    }
+
+    async buySnack(snackId) {
+        return await invoke('buy_snack', { snackId });
+    }
+
     async quitApp() {
         return await invoke('quit_app');
     }

@@ -1,7 +1,7 @@
 use tauri::{AppHandle, State};
 use serde::Serialize;
 use chrono::Utc;
-use crate::{AppState, pet::{PetState, GameStats, Achievement, achievements}};
+use crate::{AppState, pet::{PetState, GameStats, Achievement, achievements, economy}};
 use crate::pet::state::{Activity, FEED_COOLDOWN_SECS, PLAY_COOLDOWN_SECS};
 use crate::storage;
 
@@ -58,6 +58,7 @@ pub fn get_pet_state(state: State<AppState>) -> Result<PetResponse, String> {
     // Check achievements on poll too (for evolution-based ones)
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
     let _ = achievements::check_achievements(&mut stats, &pet);
+    stats.accrue_passive(Utc::now().timestamp(), pet.is_alive);
     save_stats(&stats);
 
     Ok(PetResponse::from(&pet))
@@ -173,4 +174,51 @@ pub fn get_achievements(state: State<AppState>) -> Result<Vec<Achievement>, Stri
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+#[tauri::command]
+pub fn get_snacks() -> Vec<economy::Snack> {
+    economy::SNACKS.to_vec()
+}
+
+#[derive(Serialize, Clone)]
+pub struct RewardResult {
+    pub earned: u64,
+    pub coins: u64,
+}
+
+/// Called by the UI when a mini game ends. Games never cost coins.
+#[tauri::command]
+pub fn report_game_result(
+    state: State<AppState>,
+    game: String,
+    outcome: String,
+    moves: Option<u32>,
+) -> Result<RewardResult, String> {
+    let earned = economy::game_reward(&game, &outcome, moves)?;
+    let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    stats.add_coins(earned);
+    save_stats(&stats);
+    Ok(RewardResult { earned, coins: stats.coins })
+}
+
+#[tauri::command]
+pub fn buy_snack(state: State<AppState>, snack_id: String) -> Result<ActionResult, String> {
+    let snack = economy::find_snack(&snack_id).ok_or_else(|| "unknown snack".to_string())?;
+
+    let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
+    let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+
+    if stats.coins < snack.price {
+        return Err(format!("not enough coins ({} needed)", snack.price));
+    }
+
+    // Validate and apply to the pet first, so coins are only spent when the snack is eaten.
+    pet.eat_snack(snack)?;
+    stats.try_spend(snack.price);
+    save_pet(&pet);
+    let new_achievements = achievements::check_achievements(&mut stats, &pet);
+    save_stats(&stats);
+
+    Ok(ActionResult::from(&pet, new_achievements))
 }
