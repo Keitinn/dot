@@ -75,6 +75,10 @@ fn main() {
             commands::report_game_result,
             commands::buy_snack,
             commands::get_load_warning,
+            commands::companion_open,
+            commands::get_companion_settings,
+            commands::set_companion_settings,
+            commands::companion_onboarding_answer,
             commands::quit_app,
         ])
         .run(tauri::generate_context!())

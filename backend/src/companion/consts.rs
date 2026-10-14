@@ -38,3 +38,44 @@ pub const QUIET_END_DEFAULT: u8 = 8;
 
 /// Line IDs remembered so they are not repeated.
 pub const LINE_HISTORY: usize = 20;
+
+// Mood (R2 / F2)
+
+/// Shortest time a mood stays while the popover is open, so the eyes do not flicker.
+pub const MOOD_MIN_DWELL_SECS: i64 = 600;
+/// `concerned` starts when the lowest need is below this…
+pub const CONCERNED_ENTER_NEEDS: u8 = 20;
+/// …or health is below this.
+pub const CONCERNED_ENTER_HEALTH: u8 = 30;
+/// `concerned` ends only once every need and health are at least this.
+pub const CONCERNED_EXIT: u8 = 30;
+pub const SLEEPY_ENERGY: u8 = 35;
+/// Sleepy hours, local. Start inclusive, end exclusive (23:00–05:59).
+pub const SLEEPY_START_HOUR: u32 = 23;
+pub const SLEEPY_END_HOUR: u32 = 6;
+/// Below this lowest need the mood is `calm` rather than `cheerful`.
+pub const CALM_NEEDS: u8 = 60;
+
+// Being away (R4, MVP: time since the last open, no idle reading)
+
+pub const AWAY_RETURN_H: i64 = 4;
+pub const MISSED_YOU_H: i64 = 24;
+
+// Lines (R3)
+
+/// Chance that `time_of_day` / `mood` lines speak when they are reached.
+pub const LINE_SPEAK_P: f64 = 0.5;
+pub const LINE_CATEGORY_COOLDOWN_H: i64 = 24;
+/// `mood_concerned` speaks about the same need at most once in this many hours.
+pub const CONCERNED_VALVE_H: i64 = 6;
+/// Characters per line, not counting the row break.
+pub const LINE_MAX_CHARS: usize = 24;
+pub const LINE_MAX_ROWS: usize = 2;
+pub const LINES_MIN: usize = 40;
+pub const LINES_PER_CATEGORY_MIN: usize = 6;
+
+// Onboarding and settings (R1)
+
+/// LATER asks once more after this many days.
+pub const LATER_REPROMPT_D: i64 = 7;
+pub const QUIET_1H_SECS: i64 = 3600;
