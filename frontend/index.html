@@ -9,6 +9,7 @@
 <body>
     <div id="app">
         <div id="settings-container">
+            <button id="games-btn" title="Games">G</button>
             <button id="trophy-btn">+</button>
             <button id="settings-btn">*</button>
             <div id="settings-menu" class="hidden">
@@ -88,6 +89,15 @@
                 </div>
                 <div id="achievements-grid"></div>
             </div>
+        </div>
+
+        <div id="games-overlay" class="hidden">
+            <div id="games-header">
+                <button id="games-back-btn" class="hidden">&lt;</button>
+                <h2 id="games-title">GAMES</h2>
+                <button id="games-close-btn">X</button>
+            </div>
+            <div id="games-body"></div>
         </div>
 
         <div id="achievement-toast" class="hidden">

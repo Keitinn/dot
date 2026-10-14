@@ -1,5 +1,6 @@
 import { PetRenderer } from './renderer.js';
 import { PetAPI } from './api.js';
+import { GamesUI } from './games.js';
 
 const FEED_COOLDOWN_SECS = 1800; // 30 minutes
 const PLAY_COOLDOWN_SECS = 1200; // 20 minutes
@@ -22,6 +23,8 @@ class DotApp {
         document.getElementById('play-btn').addEventListener('click', () => this.playWithPet());
         document.getElementById('sleep-btn').addEventListener('click', () => this.putToSleep());
         document.getElementById('revive-btn').addEventListener('click', () => this.revivePet());
+
+        this.games = new GamesUI();
 
         // Trophy / achievements button
         document.getElementById('trophy-btn').addEventListener('click', (e) => {
