@@ -96,6 +96,20 @@ pub fn open_with<R: Rng + ?Sized>(
     OpenResult { enabled: true, mood: shown.mood, line, prompt: false }
 }
 
+/// Re-checks the mood while the popover stays open (F2: Trigger::Refresh, so
+/// MOOD_MIN_DWELL holds it). Not an open: no visit, no line. `None` when the
+/// pet is not a living adult.
+pub fn refresh(state: &mut CompanionState, pet: &PetState, now: i64, hour: u32) -> Option<Mood> {
+    if !is_active(pet) {
+        return None;
+    }
+    // missed_you is only for the moment of opening, so the time since it does not matter
+    let input = MoodInput::from_pet(pet, hour, None);
+    let shown = mood::decide(&input, state.mood.as_ref(), now, Trigger::Refresh);
+    state.mood = Some(shown);
+    Some(shown.mood)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +425,70 @@ mod tests {
 
         assert_eq!(c.mood, None);
         assert_eq!(c.bond_tier_said, 0);
+    }
+
+    // Refresh while the popover stays open
+
+    #[test]
+    fn refresh_is_off_for_a_pet_that_is_not_a_living_adult() {
+        let mut pet = adult();
+        let mut c = companion(&pet);
+        let before = c.clone();
+        pet.stage = EvolutionStage::Child;
+        assert_eq!(refresh(&mut c, &pet, at(14, 12, 0).0, 12), None);
+        pet.stage = EvolutionStage::Adult;
+        pet.is_alive = false;
+        assert_eq!(refresh(&mut c, &pet, at(14, 12, 0).0, 12), None);
+        assert_eq!(c, before);
+    }
+
+    #[test]
+    fn refresh_waits_out_the_dwell() {
+        let mut pet = adult();
+        let mut c = companion(&pet);
+        let open = at(14, 12, 0);
+        assert_eq!(open_at(&mut c, &pet, open, 0.0).mood, Mood::Cheerful);
+        pet.happiness = 40;
+
+        assert_eq!(refresh(&mut c, &pet, open.0 + 599, 12), Some(Mood::Cheerful));
+        assert_eq!(refresh(&mut c, &pet, open.0 + 600, 12), Some(Mood::Calm));
+        assert_eq!(c.mood.map(|m| m.mood), Some(Mood::Calm));
+    }
+
+    #[test]
+    fn refresh_turns_concerned_at_once() {
+        let mut pet = adult();
+        let mut c = companion(&pet);
+        let open = at(14, 12, 0);
+        open_at(&mut c, &pet, open, 0.0);
+        pet.hunger = 10;
+        assert_eq!(refresh(&mut c, &pet, open.0 + 5, 12), Some(Mood::Concerned));
+    }
+
+    #[test]
+    fn refresh_lets_missed_you_go() {
+        let pet = adult();
+        let mut c = companion(&pet);
+        open_at(&mut c, &pet, at(13, 8, 0), 0.0);
+        let open = at(14, 14, 0);
+        assert_eq!(open_at(&mut c, &pet, open, 0.0).mood, Mood::MissedYou);
+
+        assert_eq!(refresh(&mut c, &pet, open.0 + 5, 14), Some(Mood::Cheerful));
+    }
+
+    #[test]
+    fn refresh_does_not_count_as_an_open() {
+        let pet = adult();
+        let mut c = companion(&pet);
+        open_at(&mut c, &pet, at(14, 8, 0), 0.0);
+        let before = c.clone();
+
+        refresh(&mut c, &pet, at(14, 9, 0).0, 9);
+
+        assert_eq!(c.last_open_at, before.last_open_at);
+        assert_eq!(c.today, before.today);
+        assert_eq!(c.lines, before.lines);
+        assert_eq!(c.onboarding, before.onboarding);
     }
 
     #[test]
