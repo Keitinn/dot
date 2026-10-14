@@ -86,6 +86,13 @@ impl PetState {
 
     /// `idle_secs` is how long the user has gone without input (F5). Taken as an argument so tests can set it.
     fn update_at(&mut self, now: i64, idle_secs: u64) {
+        // The stage at the start of the span decides the whole span, even if the pet evolves during it
+        let stage_mult = super::needs::stage_decay_mult(self.stage);
+        self.update_at_with_mult(now, idle_secs, stage_mult);
+    }
+
+    /// `update_at` with the stage decay multiplier given, so tests can pin it.
+    fn update_at_with_mult(&mut self, now: i64, idle_secs: u64, stage_mult: f64) {
         if !self.is_alive {
             return;
         }
@@ -99,7 +106,7 @@ impl PetState {
         // Update needs: the present part first, then the away part as deep sleep.
         // The present part needs the activity as it was, to split at the end of a sleep
         let split = super::needs::split_elapsed_with_idle(elapsed, idle_secs);
-        super::needs::apply_decay(self, split.present_secs);
+        super::needs::apply_decay(self, split.present_secs, stage_mult);
 
         // Check if current activity has ended
         if let Some(until) = self.activity_until {
@@ -115,13 +122,18 @@ impl PetState {
         // Check death conditions. Deep sleep cannot kill, so only the present part is checked
         super::lifecycle::check_death(self);
 
-        super::needs::apply_deep_sleep(self, split.away_secs);
+        super::needs::apply_deep_sleep(self, split.away_secs, stage_mult);
 
         self.last_update = now;
     }
 
     pub fn feed(&mut self) {
         self.update();
+        self.apply_feed(Utc::now().timestamp());
+    }
+
+    /// FEED on a pet already updated to `now`.
+    fn apply_feed(&mut self, now: i64) {
         if !self.is_alive {
             return;
         }
@@ -131,7 +143,6 @@ impl PetState {
             return;
         }
 
-        let now = Utc::now().timestamp();
         self.hunger = (self.hunger + 30).min(100);
         self.happiness = (self.happiness + 5).min(100);
         self.last_feed_time = Some(now);
@@ -141,6 +152,11 @@ impl PetState {
 
     pub fn play(&mut self) {
         self.update();
+        self.apply_play(Utc::now().timestamp());
+    }
+
+    /// PLAY on a pet already updated to `now`.
+    fn apply_play(&mut self, now: i64) {
         if !self.is_alive {
             return;
         }
@@ -150,7 +166,6 @@ impl PetState {
             return;
         }
 
-        let now = Utc::now().timestamp();
         self.happiness = (self.happiness + 20).min(100);
         self.energy = self.energy.saturating_sub(10);
         self.hunger = self.hunger.saturating_sub(5);
@@ -672,8 +687,8 @@ mod tests {
     #[test]
     fn test_idle_over_threshold_uses_deep_sleep_rules() {
         let mut pet = pet_left_at(100, 80, 60, 100);
-        // The user left 40 minutes before T0
-        poll_until(&mut pet, T0 + 24 * HOUR, POLL, idle_since(T0 - 40 * MINUTE));
+        // The user left 40 minutes before T0. Multiplier 1.0, so hunger reaches the floor within the day
+        poll_until_with_mult(&mut pet, T0 + 24 * HOUR, POLL, 1.0, idle_since(T0 - 40 * MINUTE));
         assert!(pet.is_alive);
         assert_eq!(pet.happiness, 80); // no decay while away
         assert_eq!(pet.hunger, 30); // stops at AWAY_HUNGER_FLOOR
@@ -795,11 +810,21 @@ mod tests {
         assert_eq!(pet.health, 53);
     }
 
-    // F4: time to death while present the whole time, multiplier 1.0 (every stage until the Companion MVP)
+    /// `poll_until` with the stage multiplier pinned, for the multiplier-1.0 rows of the design tables.
+    /// A real pet turns Adult after 6 hours of age, so it would leave 1.0 partway through.
+    fn poll_until_with_mult(pet: &mut PetState, end: i64, step: i64, mult: f64, idle_at: impl Fn(i64) -> u64) {
+        let mut now = pet.last_update;
+        while now < end && pet.is_alive {
+            now = (now + step).min(end);
+            pet.update_at_with_mult(now, idle_at(now), mult);
+        }
+    }
+
+    // F4: time to death while present the whole time, multiplier 1.0 (Egg to Child)
     #[test]
     fn test_f4_continuous_presence_dies_at_t_allzero() {
         let mut pet = pet_left_at(100, 100, 100, 100);
-        poll_until(&mut pet, T0 + 30 * HOUR, MINUTE, |_| 0);
+        poll_until_with_mult(&mut pet, T0 + 30 * HOUR, MINUTE, 1.0, |_| 0);
         assert!(!pet.is_alive);
         let minutes = (pet.last_update - T0) / MINUTE;
         // T_allzero = max(100/0.2, 100/0.15, 100/0.1) = 1000 min, before T_health = 90/0.2 + 100/0.05 = 2450 min
@@ -807,37 +832,67 @@ mod tests {
         assert!(pet.health > 0, "should die of neglect, not health");
     }
 
+    /// Daily care on weekdays, as times after 9:00 (the design F4 care table: FEED 9:30, PLAY 14:00).
+    struct Care {
+        feeds: &'static [i64],
+        plays: &'static [i64],
+    }
+
+    const NO_CARE: Care = Care { feeds: &[], plays: &[] };
+    const FEED_AND_PLAY: Care = Care { feeds: &[30 * MINUTE], plays: &[5 * HOUR] };
+
     /// Present `hours_per_day` from 9:00 on weekdays, away the rest of the time, the app always running.
-    /// Returns (business day of death, scheduled present hours, present hours including the 30 minute borders).
-    fn f4_schedule_death(hours_per_day: i64) -> (i64, f64, f64) {
-        let mut pet = pet_left_at(100, 100, 100, 100);
-        let monday_9am = T0;
+    /// `mult` pins the stage multiplier; `None` lets the pet's stage decide it.
+    /// Returns (business day of death, scheduled present hours, present hours including the 30 minute borders),
+    /// or `None` if the pet is still alive after `days`.
+    fn simulate_workdays(
+        mut pet: PetState,
+        mult: Option<f64>,
+        hours_per_day: i64,
+        care: &Care,
+        days: i64,
+    ) -> Option<(i64, f64, f64)> {
+        let monday_9am = pet.last_update;
         let mut last_input = monday_9am;
         let mut scheduled = 0;
         let mut borders = 0;
         let mut now = monday_9am;
-        while pet.is_alive {
+        while pet.is_alive && now < monday_9am + days * DAY {
             let since_monday = now - monday_9am;
             let (day, time_of_day) = (since_monday / DAY, since_monday % DAY);
             let weekday = day % 7 < 5;
             let at_desk = weekday && time_of_day < hours_per_day * HOUR;
             if at_desk {
                 last_input = now;
+                if care.feeds.contains(&time_of_day) {
+                    pet.apply_feed(now);
+                }
+                if care.plays.contains(&time_of_day) {
+                    pet.apply_play(now);
+                }
             }
             now += MINUTE;
             let idle = (now - last_input).max(0) as u64;
-            pet.update_at(now, idle);
+            let mult = mult.unwrap_or_else(|| super::super::needs::stage_decay_mult(pet.stage));
+            pet.update_at_with_mult(now, idle, mult);
             if at_desk {
                 scheduled += MINUTE;
             } else if idle <= super::super::needs::AWAY_THRESHOLD_SECS {
                 borders += MINUTE;
             }
-            assert!(day < 60, "never died");
+        }
+        if pet.is_alive {
+            return None;
         }
         let day = (pet.last_update - 1 - monday_9am) / DAY;
         let business_day = day / 7 * 5 + day % 7 + 1;
         let hours = |secs: i64| secs as f64 / HOUR as f64;
-        (business_day, hours(scheduled), hours(scheduled + borders))
+        Some((business_day, hours(scheduled), hours(scheduled + borders)))
+    }
+
+    fn f4_schedule_death(hours_per_day: i64) -> (i64, f64, f64) {
+        simulate_workdays(pet_left_at(100, 100, 100, 100), Some(1.0), hours_per_day, &NO_CARE, 60)
+            .expect("never died")
     }
 
     #[test]
@@ -856,5 +911,114 @@ mod tests {
         assert_eq!(business_day, 9);
         assert!((scheduled - 35.5).abs() <= 0.25, "scheduled {}", scheduled);
         assert!((with_borders - 39.5).abs() <= 0.25, "with borders {}", with_borders);
+    }
+
+    // Adult decay multiplier 0.2 (design R5, F4, F5; decision 18)
+    fn adult_left_at(hunger: u8, happiness: u8, energy: u8, health: u8) -> PetState {
+        let mut pet = pet_left_at(hunger, happiness, energy, health);
+        pet.stage = EvolutionStage::Adult;
+        pet.age = 30 * DAY as u64;
+        pet
+    }
+
+    #[test]
+    fn test_adult_decays_at_a_fifth_of_the_rate() {
+        let mut pet = adult_left_at(100, 100, 100, 100);
+        poll_until(&mut pet, T0 + 600 * MINUTE, POLL, |_| 0);
+        // 600 minutes: hunger 0.04, happiness 0.03, energy 0.02 per minute
+        assert_eq!(stats(&pet), [76, 82, 88, 100]);
+    }
+
+    #[test]
+    fn test_adult_continuous_presence_dies_around_71_hours() {
+        let mut pet = adult_left_at(100, 100, 100, 100);
+        poll_until(&mut pet, T0 + 69 * HOUR, POLL, |_| 0);
+        assert!(pet.is_alive);
+        assert_eq!((pet.hunger, pet.happiness), (0, 0));
+        assert!(pet.energy.abs_diff(17) <= 1, "energy {}", pet.energy);
+        assert!(pet.health.abs_diff(5) <= 1, "health {}", pet.health);
+
+        poll_until(&mut pet, T0 + 72 * HOUR, POLL, |_| 0);
+        assert!(!pet.is_alive);
+        // T_death = T_health = 90/0.04 + 100/0.05 = 4250 minutes = 70.8 hours (T_allzero is 83.3 hours)
+        let hours = (pet.last_update - T0) as f64 / HOUR as f64;
+        assert!((hours - 70.8).abs() <= 1.0, "died after {} hours", hours);
+        assert!(pet.energy > 0, "should die of health, not neglect");
+    }
+
+    #[test]
+    fn test_adult_nine_hours_a_day_without_care_dies_on_7th_business_day() {
+        // Design F4: Adult (0.2), 9 h/day -> 7th business day (57.7 / 60.7 present hours). AC range 56-59 / 59-62
+        let (business_day, scheduled, with_borders) =
+            simulate_workdays(adult_left_at(100, 100, 100, 100), None, 9, &NO_CARE, 60).expect("never died");
+        assert_eq!(business_day, 7);
+        assert!((56.0..=59.0).contains(&scheduled), "scheduled {}", scheduled);
+        assert!((59.0..=62.0).contains(&with_borders), "with borders {}", with_borders);
+    }
+
+    #[test]
+    fn test_adult_feed_and_play_once_a_day_survives_130_days() {
+        // Design F4 care table: 0.2 with FEED 1 + PLAY 1 survives (decision 18)
+        let death = simulate_workdays(adult_left_at(100, 100, 100, 100), None, 9, &FEED_AND_PLAY, 130);
+        assert_eq!(death, None);
+    }
+
+    #[test]
+    fn test_old_multiplier_dies_despite_feed_and_play() {
+        // Why 0.4 was dropped: FEED 1 + PLAY 1 still dies on the 9th business day (design F4 care table)
+        let death = simulate_workdays(adult_left_at(100, 100, 100, 100), Some(0.4), 9, &FEED_AND_PLAY, 130);
+        assert_eq!(death.map(|(business_day, _, _)| business_day), Some(9));
+    }
+
+    #[test]
+    fn test_adult_absence_from_full_stats_survives() {
+        for gap in ABSENCES {
+            let mut pet = adult_left_at(100, 100, 100, 100);
+            pet.update_at(T0 + gap, 0);
+            assert!(pet.is_alive, "died after {}s", gap);
+            // Design verification table, Adult 0.2 row
+            assert_stats_near(&pet, [30.0, 99.1, 100.0, 100.0]);
+        }
+    }
+
+    #[test]
+    fn test_adult_absence_from_typical_friday_stats_survives() {
+        for gap in ABSENCES {
+            let mut pet = adult_left_at(70, 70, 50, 100);
+            pet.update_at(T0 + gap, 0);
+            assert!(pet.is_alive, "died after {}s", gap);
+            assert_stats_near(&pet, [30.0, 69.1, 100.0, 100.0]);
+        }
+    }
+
+    #[test]
+    fn test_adult_absence_hunger_converges_slower() {
+        // Adult away hunger: 0.2 * 0.5 * 0.2 = 0.02 per minute. 24 hours: 98.8 - 0.02 * 1410 = 70.6
+        let mut pet = adult_left_at(100, 100, 100, 100);
+        pet.update_at(T0 + 24 * HOUR, 0);
+        assert_stats_near(&pet, [70.6, 99.1, 100.0, 100.0]);
+    }
+
+    #[test]
+    fn test_evolving_update_uses_the_stage_at_its_start() {
+        // A Child one minute before adulthood, then a 63 hour gap: the whole gap keeps the Child rate
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        pet.stage = EvolutionStage::Child;
+        pet.age = 6 * HOUR as u64 - 60;
+        pet.update_at(T0 + 63 * HOUR, 0);
+        assert_eq!(pet.stage, EvolutionStage::Adult);
+        assert_stats_near(&pet, [30.0, 95.5, 100.0, 100.0]);
+    }
+
+    #[test]
+    fn test_young_stages_keep_full_rate() {
+        for stage in [EvolutionStage::Egg, EvolutionStage::Baby, EvolutionStage::Child] {
+            let mut pet = pet_left_at(100, 100, 100, 100);
+            pet.stage = stage;
+            pet.age = 0;
+            poll_until(&mut pet, T0 + HOUR, POLL, |_| 0);
+            // Under an hour of age, so none of them reaches Adult: 0.2 * 60, 0.15 * 60, 0.1 * 60
+            assert_eq!(stats(&pet), [88, 91, 94, 100], "{:?}", stage);
+        }
     }
 }
