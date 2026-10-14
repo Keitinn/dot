@@ -112,6 +112,7 @@ export function minPlayMs(game, moves = 0) {
         case 'memory': return Math.max(4000, 500 * (moves || 0));
         // Games checked in Rust: `moves` is the count game_step returned when finished
         case 'hit_blow': return Math.max(3000, 1000 * (moves || 0));
+        case 'high_low': return Math.max(2000, 500 * (moves || 0));
         default: return 0;
     }
 }
@@ -147,6 +148,24 @@ export function hitBlowSlots(typed) {
 
 export function hitBlowRowText(row) {
     return `${row.digits.join('')} ${row.hit}H ${row.blow}B`;
+}
+
+// ---------- HIGH & LOW (the deck stays in Rust) ----------
+const VERDICT_TEXT = { win: 'RIGHT', draw: 'TIE', lose: 'MISS' };
+const HIGH_LOW_END_TEXT = { lost: 'MISS', stopped: 'STOPPED', deck_out: 'NO CARDS LEFT', max: 'TOP STREAK!' };
+
+/** A card from Rust ({ rank: 1-13, suit: 0-3 }) drawn like a blackjack card. */
+export function cardText(card) {
+    return `${RANKS[card.rank - 1]}${SUITS[card.suit]}`;
+}
+
+export function turnText(turn) {
+    if (!turn) return '';
+    return `${turn.call.toUpperCase()} ${cardText(turn.card)} ${VERDICT_TEXT[turn.verdict]}`;
+}
+
+export function highLowEndText(end) {
+    return HIGH_LOW_END_TEXT[end] || '';
 }
 
 /** Suffix for a result line: coins earned, and DAILY LIMIT when the cap cut the reward. */

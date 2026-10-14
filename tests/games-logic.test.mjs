@@ -18,6 +18,9 @@ import {
     typeDigit,
     hitBlowRowText,
     hitBlowSlots,
+    cardText,
+    turnText,
+    highLowEndText,
 } from '../frontend/js/games-logic.js';
 
 const c = (rank, suit = '♠') => ({ rank, suit });
@@ -125,6 +128,9 @@ const RUST_MIN_PLAY_MS = [
     ['hit_blow', 1, 3000],
     ['hit_blow', 3, 3000],
     ['hit_blow', 8, 8000],
+    ['high_low', 0, 2000],
+    ['high_low', 4, 2000],
+    ['high_low', 9, 4500],
 ];
 
 test('reward: minimum play time of the Rust-checked games matches game_session.rs', () => {
@@ -159,6 +165,23 @@ test('hit & blow: rows and slots read as text', () => {
     assert.equal(hitBlowRowText({ digits: [0, 1, 2], hit: 1, blow: 2 }), '012 1H 2B');
     assert.equal(hitBlowSlots([]), '_ _ _');
     assert.equal(hitBlowSlots([5, 0]), '5 0 _');
+});
+
+test('high & low: cards from Rust use the blackjack faces (A=1, K=13)', () => {
+    assert.equal(cardText({ rank: 1, suit: 0 }), 'A♠');
+    assert.equal(cardText({ rank: 10, suit: 1 }), '10♥');
+    assert.equal(cardText({ rank: 13, suit: 3 }), 'K♣');
+});
+
+test('high & low: the last call and the end read as text', () => {
+    assert.equal(turnText({ call: 'high', card: { rank: 12, suit: 2 }, verdict: 'win' }), 'HIGH Q♦ RIGHT');
+    assert.equal(turnText({ call: 'low', card: { rank: 5, suit: 0 }, verdict: 'draw' }), 'LOW 5♠ TIE');
+    assert.equal(turnText({ call: 'low', card: { rank: 9, suit: 0 }, verdict: 'lose' }), 'LOW 9♠ MISS');
+    assert.equal(turnText(null), '');
+    assert.equal(highLowEndText('lost'), 'MISS');
+    assert.equal(highLowEndText('stopped'), 'STOPPED');
+    assert.equal(highLowEndText('deck_out'), 'NO CARDS LEFT');
+    assert.equal(highLowEndText('max'), 'TOP STREAK!');
 });
 
 test('reward: text shows coins and the daily limit', () => {

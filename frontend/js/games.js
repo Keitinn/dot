@@ -16,6 +16,9 @@ import {
     typeDigit,
     hitBlowRowText,
     hitBlowSlots,
+    cardText,
+    turnText,
+    highLowEndText,
 } from './games-logic.js';
 
 const HAND_ICON = { rock: '✊', paper: '✋', scissors: '✌️' };
@@ -210,6 +213,7 @@ export class GamesUI {
         list.appendChild(button('MEMORY', () => this.showMemory(), 'game-menu-btn'));
         list.appendChild(button('BLACKJACK', () => this.showBlackjack(), 'game-menu-btn'));
         list.appendChild(button('HIT & BLOW', () => this.showHitBlow(), 'game-menu-btn'));
+        list.appendChild(button('HIGH & LOW', () => this.showHighLow(), 'game-menu-btn'));
         this.body.appendChild(list);
     }
 
@@ -291,6 +295,70 @@ export class GamesUI {
         };
 
         this.body.append(el('div', 'game-note', '3 DIGITS, NO REPEATS. H=SPOT B=DIGIT'), slots, history, keypad, controls, info, result);
+        render(view);
+    }
+
+    // ---------- HIGH & LOW ----------
+    async showHighLow() {
+        this.setScreen('HIGH & LOW', true);
+        const live = this.liveCheck();
+        const rec = (this.record.high_low = this.record.high_low || {});
+        const play = await this.play('high_low');
+        if (!live()) return;
+        if (!play) return this.showStartFailed(() => this.showHighLow());
+
+        let busy = false;
+        const card = el('div', 'bj-card hl-card', '');
+        const last = el('div', 'game-note', '');
+        const info = el('div', 'game-note', '');
+        const result = el('div', 'game-result', '');
+        const controls = el('div', 'game-row');
+
+        const render = (view) => {
+            card.textContent = cardText(view.card);
+            last.textContent = turnText(view.last);
+            info.textContent = `STREAK ${view.streak}  STOP +$${view.banked}  BEST ${rec.best ?? '-'}`;
+            for (const b of controls.children) b.disabled = busy || !!view.end;
+        };
+
+        const act = async (input) => {
+            busy = true;
+            render(view);
+            const r = await this.move(play, input);
+            if (!live()) return;
+            busy = false;
+            if (!r) {
+                result.textContent = 'TRY AGAIN';
+                render(view);
+                return;
+            }
+            view = r.view;
+            result.textContent = '';
+            render(view);
+            if (r.finished) finish(r);
+        };
+
+        const finish = (r) => {
+            const base = highLowEndText(view.end);
+            result.textContent = base;
+            if (view.end !== 'lost' && (rec.best === undefined || view.streak > rec.best)) {
+                rec.best = view.streak;
+                saveRecord(this.record);
+            }
+            controls.innerHTML = '';
+            controls.appendChild(button('NEW GAME', () => this.showHighLow()));
+            this.settle(play, 'high_low', r).then((reward) => {
+                if (live()) result.textContent = base + settleText(reward);
+            });
+        };
+
+        let view = play.result.view;
+        controls.append(
+            button('HIGH', () => act({ type: 'high' })),
+            button('LOW', () => act({ type: 'low' })),
+            button('STOP', () => act({ type: 'stop' })),
+        );
+        this.body.append(el('div', 'game-note', 'IS THE NEXT CARD HIGHER OR LOWER?'), card, last, info, controls, result);
         render(view);
     }
 

@@ -2,11 +2,13 @@
 //! time through `game_step` and sees only what that move reveals; the coins
 //! of a finished game come from this state, never from the UI's report.
 
+pub mod high_low;
 pub mod hit_blow;
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
+use high_low::{Call, HighLow};
 use hit_blow::HitBlow;
 
 /// One move sent by the UI.
@@ -17,6 +19,12 @@ pub enum StepInput {
     Look,
     /// HIT & BLOW: 3 distinct digits
     Guess { digits: Vec<u8> },
+    /// HIGH & LOW: the next card is higher
+    High,
+    /// HIGH & LOW: the next card is lower
+    Low,
+    /// HIGH & LOW: take the coins for the streak so far
+    Stop,
 }
 
 /// A finished game: its coins before the daily cap, and the count
@@ -43,12 +51,14 @@ pub struct StepResult {
 #[serde(tag = "game", rename_all = "snake_case")]
 pub enum View {
     HitBlow(hit_blow::View),
+    HighLow(high_low::View),
 }
 
 /// A game in progress, with its secret.
 #[derive(Debug, Clone)]
 pub enum GameState {
     HitBlow(HitBlow),
+    HighLow(HighLow),
 }
 
 impl GameState {
@@ -56,6 +66,7 @@ impl GameState {
     pub fn new(game: &str, rng: &mut impl Rng) -> Option<Self> {
         match game {
             "hit_blow" => Some(Self::HitBlow(HitBlow::new(rng))),
+            "high_low" => Some(Self::HighLow(HighLow::new(rng))),
             _ => None,
         }
     }
@@ -63,6 +74,7 @@ impl GameState {
     pub fn settled(&self) -> Option<Settled> {
         match self {
             Self::HitBlow(g) => g.settled(),
+            Self::HighLow(g) => g.settled(),
         }
     }
 
@@ -76,6 +88,14 @@ impl GameState {
             (Self::HitBlow(g), StepInput::Guess { digits }) => {
                 g.guess(digits)?;
             }
+            (Self::HighLow(g), StepInput::High) => {
+                g.call(Call::High)?;
+            }
+            (Self::HighLow(g), StepInput::Low) => {
+                g.call(Call::Low)?;
+            }
+            (Self::HighLow(g), StepInput::Stop) => g.stop()?,
+            _ => return Err("not a move in this game".to_string()),
         }
         Ok(self.result())
     }
@@ -83,6 +103,7 @@ impl GameState {
     fn view(&self) -> View {
         match self {
             Self::HitBlow(g) => View::HitBlow(g.view()),
+            Self::HighLow(g) => View::HighLow(g.view()),
         }
     }
 

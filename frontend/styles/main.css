@@ -630,6 +630,14 @@ body {
     padding: 5px 0;
 }
 
+/* HIGH & LOW */
+.hl-card {
+    min-width: 64px;
+    padding: 22px 8px;
+    margin: 10px 0 4px;
+    font-size: 20px;
+}
+
 /* Coins & shop */
 #coin-label {
     font-size: 10px;

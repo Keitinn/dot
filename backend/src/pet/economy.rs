@@ -58,6 +58,11 @@ pub fn hit_blow_reward(solved_in: Option<u32>) -> u64 {
     }
 }
 
+/// HIGH & LOW: 1 coin per call in the streak, up to 5.
+pub fn high_low_reward(streak: u32) -> u64 {
+    u64::from(streak.min(5))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +117,14 @@ mod tests {
         assert_eq!(hit_blow_reward(None), 0);
         assert_eq!(hit_blow_reward(Some(0)), 0);
         assert_eq!(hit_blow_reward(Some(9)), 0);
+    }
+
+    #[test]
+    fn test_high_low_reward_by_streak() {
+        let expected = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 5), (51, 5)];
+        for (streak, coins) in expected {
+            assert_eq!(high_low_reward(streak), coins, "streak {streak}");
+        }
     }
 
     #[test]
