@@ -407,7 +407,8 @@ export class GamesUI {
             for (const p of pads) p.disabled = !on;
         };
         const renderInfo = () => {
-            info.textContent = `ROUND ${view.round}  ${taps.length}/${view.show.length}  BEST ${rec.best ?? '-'}`;
+            const progress = view.show.length > 0 ? `  ${taps.length}/${view.show.length}` : '';
+            info.textContent = `ROUND ${view.round}${progress}  BEST ${rec.best ?? '-'}`;
         };
 
         // Shows this round's order, then lets the player repeat it.
@@ -415,6 +416,7 @@ export class GamesUI {
             taps = [];
             setListening(false);
             status.textContent = 'WATCH';
+            result.textContent = '';
             renderInfo();
             await this.wait(600);
             if (reduced) {
@@ -450,7 +452,6 @@ export class GamesUI {
             }
             view = r.view;
             if (r.finished) return finish(r);
-            status.textContent = 'GOOD';
             showRound();
         };
 
