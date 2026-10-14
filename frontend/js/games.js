@@ -56,7 +56,9 @@ function button(label, onClick, className = 'game-btn') {
 }
 
 export class GamesUI {
-    constructor() {
+    constructor(api, onReward) {
+        this.api = api;
+        this.onReward = onReward || (() => {});
         this.overlay = document.getElementById('games-overlay');
         this.title = document.getElementById('games-title');
         this.body = document.getElementById('games-body');
@@ -96,6 +98,21 @@ export class GamesUI {
         this.body.innerHTML = '';
     }
 
+    async reward(game, outcome, moves = null) {
+        try {
+            const r = await this.api.reportGameResult(game, outcome, moves);
+            this.onReward(r);
+            return r.earned;
+        } catch (e) {
+            console.error('Failed to report game result:', e);
+            return 0;
+        }
+    }
+
+    coinText(earned) {
+        return earned > 0 ? ` +$${earned}` : '';
+    }
+
     bump(game, key) {
         const g = (this.record[game] = this.record[game] || {});
         g[key] = (g[key] || 0) + 1;
@@ -131,7 +148,7 @@ export class GamesUI {
         const choices = el('div', 'game-row');
         for (const hand of JANKEN_HANDS) {
             choices.appendChild(
-                button(`${HAND_ICON[hand]}\n${HAND_LABEL[hand]}`, () => {
+                button(`${HAND_ICON[hand]}\n${HAND_LABEL[hand]}`, async () => {
                     const cpuHand = randomHand();
                     const outcome = judgeJanken(hand, cpuHand);
                     me.textContent = HAND_ICON[hand];
@@ -140,6 +157,8 @@ export class GamesUI {
                     result.textContent = RESULT_TEXT[outcome];
                     this.bump('janken', outcome);
                     updateScore();
+                    const earned = await this.reward('janken', outcome);
+                    result.textContent = RESULT_TEXT[outcome] + this.coinText(earned);
                 }, 'game-btn janken-choice')
             );
         }
@@ -196,6 +215,9 @@ export class GamesUI {
                     rec.best = moves;
                     saveRecord(this.record);
                 }
+                this.reward('memory', 'clear', moves).then((earned) => {
+                    result.textContent = `CLEAR! ${moves} MOVES${this.coinText(earned)}`;
+                });
             }
             render();
             renderInfo();
@@ -250,9 +272,13 @@ export class GamesUI {
         const finish = () => {
             over = true;
             const outcome = judgeBlackjack(player, dealer);
-            result.textContent = RESULT_TEXT[outcome] + (handValue(player) > 21 ? ' (BUST)' : '');
+            const base = RESULT_TEXT[outcome] + (handValue(player) > 21 ? ' (BUST)' : '');
+            result.textContent = base;
             this.bump('blackjack', outcome);
             render();
+            this.reward('blackjack', outcome).then((earned) => {
+                result.textContent = base + this.coinText(earned);
+            });
         };
 
         const deal = () => {

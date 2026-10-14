@@ -29,12 +29,14 @@ body {
     right: 4px;
     z-index: 50;
     display: flex;
+    align-items: center;
     gap: 2px;
 }
 
 #settings-btn,
 #trophy-btn,
-#games-btn {
+#games-btn,
+#shop-btn {
     width: 20px;
     height: 20px;
     background: transparent;
@@ -47,7 +49,8 @@ body {
 
 #settings-btn:hover,
 #trophy-btn:hover,
-#games-btn:hover {
+#games-btn:hover,
+#shop-btn:hover {
     background: #000;
     color: #fff;
 }
@@ -562,4 +565,125 @@ body {
 .bj-card.hidden-card {
     background: #000;
     color: #fff;
+}
+
+/* Coins & shop */
+#coin-label {
+    font-size: 10px;
+    font-weight: 900;
+    margin-right: 4px;
+}
+
+#shop-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #e8e8e8;
+    display: flex;
+    flex-direction: column;
+    z-index: 96;
+    border: 2px solid #000;
+}
+
+#shop-overlay.hidden {
+    display: none;
+}
+
+#shop-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px;
+    border-bottom: 2px solid #000;
+    background: #fff;
+}
+
+#shop-header h2 {
+    flex: 1;
+    font-size: 10px;
+    font-weight: 900;
+    font-family: 'Courier New', monospace;
+}
+
+#shop-coins {
+    font-size: 10px;
+    font-weight: 900;
+}
+
+#shop-close-btn {
+    width: 20px;
+    height: 20px;
+    background: transparent;
+    border: 1px solid #000;
+    font-size: 11px;
+    font-weight: bold;
+    cursor: pointer;
+    font-family: 'Courier New', monospace;
+}
+
+#shop-close-btn:hover {
+    background: #000;
+    color: #fff;
+}
+
+#shop-list {
+    flex: 1;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.shop-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    background: #fff;
+    border: 2px solid #000;
+}
+
+.shop-name {
+    font-size: 10px;
+    font-weight: 900;
+}
+
+.shop-effect {
+    font-size: 8px;
+    color: #444;
+    margin-top: 2px;
+}
+
+.shop-buy {
+    min-width: 44px;
+    padding: 6px;
+    background: #fff;
+    color: #000;
+    border: 2px solid #000;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    font-weight: 900;
+    cursor: pointer;
+}
+
+.shop-buy:hover:not(:disabled) {
+    background: #000;
+    color: #fff;
+}
+
+.shop-buy:disabled {
+    color: #999;
+    border-color: #999;
+    cursor: default;
+}
+
+#shop-msg {
+    min-height: 22px;
+    padding: 4px 8px 8px;
+    font-size: 10px;
+    font-weight: 900;
+    text-align: center;
 }

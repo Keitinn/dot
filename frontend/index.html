@@ -9,6 +9,8 @@
 <body>
     <div id="app">
         <div id="settings-container">
+            <span id="coin-label" title="Coins">$0</span>
+            <button id="shop-btn" title="Snack shop">S</button>
             <button id="games-btn" title="Games">G</button>
             <button id="trophy-btn">+</button>
             <button id="settings-btn">*</button>
@@ -89,6 +91,16 @@
                 </div>
                 <div id="achievements-grid"></div>
             </div>
+        </div>
+
+        <div id="shop-overlay" class="hidden">
+            <div id="shop-header">
+                <h2>SNACK SHOP</h2>
+                <span id="shop-coins">$0</span>
+                <button id="shop-close-btn">X</button>
+            </div>
+            <div id="shop-list"></div>
+            <div id="shop-msg"></div>
         </div>
 
         <div id="games-overlay" class="hidden">

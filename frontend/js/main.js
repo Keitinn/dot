@@ -1,6 +1,7 @@
 import { PetRenderer } from './renderer.js';
 import { PetAPI } from './api.js';
 import { GamesUI } from './games.js';
+import { ShopUI } from './shop.js';
 
 const FEED_COOLDOWN_SECS = 1800; // 30 minutes
 const PLAY_COOLDOWN_SECS = 1200; // 20 minutes
@@ -24,7 +25,12 @@ class DotApp {
         document.getElementById('sleep-btn').addEventListener('click', () => this.putToSleep());
         document.getElementById('revive-btn').addEventListener('click', () => this.revivePet());
 
-        this.games = new GamesUI();
+        this.games = new GamesUI(this.api, (r) => this.setCoins(r.coins));
+        this.shop = new ShopUI(
+            this.api,
+            () => (this.gameStats ? this.gameStats.coins : 0),
+            (result) => this.handleActionResult(result)
+        );
 
         // Trophy / achievements button
         document.getElementById('trophy-btn').addEventListener('click', (e) => {
@@ -80,6 +86,7 @@ class DotApp {
         try {
             this.gameStats = await this.api.getGameStats();
             this.updateStreakDisplay();
+            this.updateCoinDisplay();
         } catch (error) {
             console.error('Failed to get game stats:', error);
         }
@@ -183,6 +190,18 @@ class DotApp {
         document.getElementById('sleep-btn').disabled = sleepDisabled;
     }
 
+    setCoins(coins) {
+        if (!this.gameStats) return;
+        this.gameStats.coins = coins;
+        this.updateCoinDisplay();
+    }
+
+    updateCoinDisplay() {
+        if (!this.gameStats) return;
+        document.getElementById('coin-label').textContent = `$${this.gameStats.coins}`;
+        if (this.shop) this.shop.render();
+    }
+
     updateStreakDisplay() {
         if (!this.gameStats) return;
         const streakEl = document.getElementById('pet-streak');
@@ -203,6 +222,7 @@ class DotApp {
     handleActionResult(result) {
         this.petState = result;
         this.updateUI();
+        this.fetchStats();
 
         // Show toast for new achievements
         if (result.new_achievements && result.new_achievements.length > 0) {

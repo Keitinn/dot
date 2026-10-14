@@ -70,6 +70,9 @@ fn main() {
             commands::revive_pet,
             commands::get_game_stats,
             commands::get_achievements,
+            commands::get_snacks,
+            commands::report_game_result,
+            commands::buy_snack,
             commands::quit_app,
         ])
         .run(tauri::generate_context!())

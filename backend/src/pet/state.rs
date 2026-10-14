@@ -136,6 +136,35 @@ impl PetState {
         self.activity_until = Some(now + PLAYING_DURATION_SECS);
     }
 
+    /// Apply a purchased snack. Does not touch the FEED cooldown.
+    /// Errors (without changing anything) if the pet is dead, asleep, or the snack would have no effect.
+    pub fn eat_snack(&mut self, snack: &super::economy::Snack) -> Result<(), String> {
+        self.update();
+        if !self.is_alive {
+            return Err("dot is gone".to_string());
+        }
+        if self.activity == Activity::Sleeping {
+            return Err("dot is sleeping".to_string());
+        }
+
+        let hunger = self.hunger.saturating_add(snack.hunger).min(100);
+        let happiness = self.happiness.saturating_add(snack.happiness).min(100);
+        let energy = self.energy.saturating_add(snack.energy).min(100);
+        let health = self.health.saturating_add(snack.health).min(100);
+        if hunger == self.hunger && happiness == self.happiness && energy == self.energy && health == self.health {
+            return Err("dot doesn't need that".to_string());
+        }
+
+        let now = Utc::now().timestamp();
+        self.hunger = hunger;
+        self.happiness = happiness;
+        self.energy = energy;
+        self.health = health;
+        self.activity = Activity::Eating;
+        self.activity_until = Some(now + EATING_DURATION_SECS);
+        Ok(())
+    }
+
     pub fn sleep(&mut self) {
         self.update();
         if !self.is_alive {
@@ -387,6 +416,51 @@ mod tests {
         pet.last_update = Utc::now().timestamp();
         pet.play(); // -5 hunger
         assert_eq!(pet.hunger, 0);
+    }
+
+    #[test]
+    fn test_eat_snack_applies_effects_without_feed_cooldown() {
+        let snack = super::super::economy::find_snack("cookie").unwrap();
+        let mut pet = PetState::new();
+        pet.last_update = Utc::now().timestamp();
+        pet.hunger = 40;
+        pet.happiness = 40;
+        assert!(pet.eat_snack(snack).is_ok());
+        assert_eq!(pet.hunger, 55);
+        assert_eq!(pet.happiness, 50);
+        assert_eq!(pet.activity, Activity::Eating);
+        assert!(pet.last_feed_time.is_none()); // FEED cooldown untouched
+    }
+
+    #[test]
+    fn test_eat_snack_caps_at_100_and_rejects_useless() {
+        let cake = super::super::economy::find_snack("cake").unwrap();
+        let mut pet = PetState::new();
+        pet.last_update = Utc::now().timestamp();
+        pet.hunger = 95;
+        pet.happiness = 90;
+        assert!(pet.eat_snack(cake).is_ok());
+        assert_eq!((pet.hunger, pet.happiness), (100, 100));
+
+        pet.activity = Activity::Idle;
+        pet.activity_until = None;
+        assert!(pet.eat_snack(cake).is_err()); // already full: nothing changes
+    }
+
+    #[test]
+    fn test_eat_snack_rejected_when_sleeping_or_dead() {
+        let candy = super::super::economy::find_snack("candy").unwrap();
+        let mut pet = PetState::new();
+        pet.last_update = Utc::now().timestamp();
+        pet.hunger = 10;
+        pet.activity = Activity::Sleeping;
+        pet.activity_until = Some(Utc::now().timestamp() + 7200);
+        assert!(pet.eat_snack(candy).is_err());
+        assert_eq!(pet.hunger, 10);
+
+        pet.activity = Activity::Idle;
+        pet.is_alive = false;
+        assert!(pet.eat_snack(candy).is_err());
     }
 
     #[test]
