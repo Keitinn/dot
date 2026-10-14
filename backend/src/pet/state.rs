@@ -42,6 +42,16 @@ pub struct PetState {
     pub last_feed_time: Option<i64>,
     #[serde(default)]
     pub last_play_time: Option<i64>,
+    // What rounding hunger..health to whole points left over, in [-0.5, 0.5].
+    // Carried to the next update so 5-second polls add up (design F0, P2). Older saves lack them: 0.
+    #[serde(default)]
+    pub(crate) hunger_frac: f64,
+    #[serde(default)]
+    pub(crate) happiness_frac: f64,
+    #[serde(default)]
+    pub(crate) energy_frac: f64,
+    #[serde(default)]
+    pub(crate) health_frac: f64,
 }
 
 impl PetState {
@@ -63,14 +73,19 @@ impl PetState {
             activity_until: None,
             last_feed_time: None,
             last_play_time: None,
+            hunger_frac: 0.0,
+            happiness_frac: 0.0,
+            energy_frac: 0.0,
+            health_frac: 0.0,
         }
     }
 
     pub fn update(&mut self) {
-        self.update_at(Utc::now().timestamp());
+        self.update_at(Utc::now().timestamp(), crate::signals::idle_seconds());
     }
 
-    fn update_at(&mut self, now: i64) {
+    /// `idle_secs` is how long the user has gone without input (F5). Taken as an argument so tests can set it.
+    fn update_at(&mut self, now: i64, idle_secs: u64) {
         if !self.is_alive {
             return;
         }
@@ -81,6 +96,11 @@ impl PetState {
         // Update age (keeps growing while away, up to a cap per gap)
         self.age += elapsed.min(super::needs::AGE_OFFLINE_CAP_SECS);
 
+        // Update needs: the present part first, then the away part as deep sleep.
+        // The present part needs the activity as it was, to split at the end of a sleep
+        let split = super::needs::split_elapsed_with_idle(elapsed, idle_secs);
+        super::needs::apply_decay(self, split.present_secs);
+
         // Check if current activity has ended
         if let Some(until) = self.activity_until {
             if now >= until {
@@ -88,10 +108,6 @@ impl PetState {
                 self.activity_until = None;
             }
         }
-
-        // Update needs: the present part first, then the away part as deep sleep
-        let split = super::needs::split_elapsed(elapsed);
-        super::needs::apply_decay(self, split.present_secs);
 
         // Check evolution
         super::evolution::check_evolution(self);
@@ -541,7 +557,7 @@ mod tests {
     fn test_absence_from_full_stats_survives() {
         for gap in ABSENCES {
             let mut pet = pet_left_at(100, 100, 100, 100);
-            pet.update_at(T0 + gap);
+            pet.update_at(T0 + gap, 0);
             assert!(pet.is_alive, "died after {}s", gap);
             assert_stats_near(&pet, [30.0, 95.5, 100.0, 100.0]);
         }
@@ -551,7 +567,7 @@ mod tests {
     fn test_absence_from_typical_friday_stats_survives() {
         for gap in ABSENCES {
             let mut pet = pet_left_at(70, 70, 50, 100);
-            pet.update_at(T0 + gap);
+            pet.update_at(T0 + gap, 0);
             assert!(pet.is_alive, "died after {}s", gap);
             assert_stats_near(&pet, [30.0, 65.5, 100.0, 100.0]);
         }
@@ -560,7 +576,7 @@ mod tests {
     #[test]
     fn test_short_gap_uses_present_rules_only() {
         let mut pet = pet_left_at(100, 100, 100, 100);
-        pet.update_at(T0 + 600);
+        pet.update_at(T0 + 600, 0);
         assert_eq!(stats(&pet), [98, 99, 99, 100]);
     }
 
@@ -568,7 +584,7 @@ mod tests {
     fn test_clock_moved_backwards_changes_nothing() {
         let mut pet = pet_left_at(70, 70, 50, 100);
         pet.age = 1234;
-        pet.update_at(T0 - HOUR);
+        pet.update_at(T0 - HOUR, 0);
         assert_eq!(stats(&pet), [70, 70, 50, 100]);
         assert_eq!(pet.age, 1234);
         assert_eq!(pet.last_update, T0 - HOUR);
@@ -578,9 +594,9 @@ mod tests {
     #[test]
     fn test_needs_gap_clamped_to_offline_cap() {
         let mut at_cap = pet_left_at(70, 70, 50, 40);
-        at_cap.update_at(T0 + 96 * HOUR);
+        at_cap.update_at(T0 + 96 * HOUR, 0);
         let mut beyond_cap = pet_left_at(70, 70, 50, 40);
-        beyond_cap.update_at(T0 + 200 * HOUR);
+        beyond_cap.update_at(T0 + 200 * HOUR, 0);
         assert_eq!(stats(&beyond_cap), stats(&at_cap));
         // age is not limited by the needs cap
         assert_eq!(beyond_cap.age, (200 * HOUR) as u64);
@@ -589,18 +605,18 @@ mod tests {
     #[test]
     fn test_age_grows_during_absence_up_to_cap() {
         let mut pet = pet_left_at(100, 100, 100, 100);
-        pet.update_at(T0 + 9 * DAY);
+        pet.update_at(T0 + 9 * DAY, 0);
         assert_eq!(pet.age, (9 * DAY) as u64);
 
         let mut pet = pet_left_at(100, 100, 100, 100);
-        pet.update_at(T0 + 30 * DAY);
+        pet.update_at(T0 + 30 * DAY, 0);
         assert_eq!(pet.age, (14 * DAY) as u64);
     }
 
     #[test]
     fn test_near_death_pet_survives_if_first_30_minutes_do_not_kill() {
         let mut pet = pet_left_at(5, 70, 50, 3);
-        pet.update_at(T0 + 63 * HOUR);
+        pet.update_at(T0 + 63 * HOUR, 0);
         assert!(pet.is_alive);
         // First 30 minutes: hunger 5 - 6 -> 0, health 3 - floor(0.05 * 30) = 2. Then nothing drops
         assert_eq!(pet.hunger, 0);
@@ -611,14 +627,14 @@ mod tests {
     #[test]
     fn test_near_death_pet_dies_within_first_30_minutes() {
         let mut pet = pet_left_at(5, 70, 50, 1);
-        pet.update_at(T0 + 63 * HOUR);
+        pet.update_at(T0 + 63 * HOUR, 0);
         assert!(!pet.is_alive);
     }
 
     #[test]
     fn test_absence_keeps_idle_so_feed_is_accepted() {
         let mut pet = pet_left_at(70, 70, 50, 100);
-        pet.update_at(T0 + 63 * HOUR);
+        pet.update_at(T0 + 63 * HOUR, 0);
         assert_eq!(pet.activity, Activity::Idle);
         assert!(pet.activity_until.is_none());
     }
@@ -628,9 +644,217 @@ mod tests {
         let mut pet = pet_left_at(70, 70, 50, 100);
         pet.activity = Activity::Sleeping;
         pet.activity_until = Some(T0 + 2 * HOUR);
-        pet.update_at(T0 + 63 * HOUR);
+        pet.update_at(T0 + 63 * HOUR, 0);
         assert_eq!(pet.activity, Activity::Idle);
         assert!(pet.activity_until.is_none());
         assert!(pet.is_alive);
+    }
+
+    // Away from the keyboard while the app keeps running (F5, P6-b)
+    const MINUTE: i64 = 60;
+    const POLL: i64 = 5;
+
+    /// Updates every `step` seconds from `last_update` up to `end`, like the frontend polling.
+    /// `idle_at(t)` is the input idle time the OS would report at `t`.
+    fn poll_until(pet: &mut PetState, end: i64, step: i64, idle_at: impl Fn(i64) -> u64) {
+        let mut now = pet.last_update;
+        while now < end && pet.is_alive {
+            now = (now + step).min(end);
+            pet.update_at(now, idle_at(now));
+        }
+    }
+
+    /// Idle time for a user whose last input was at `last_input`.
+    fn idle_since(last_input: i64) -> impl Fn(i64) -> u64 {
+        move |now| (now - last_input).max(0) as u64
+    }
+
+    #[test]
+    fn test_idle_over_threshold_uses_deep_sleep_rules() {
+        let mut pet = pet_left_at(100, 80, 60, 100);
+        // The user left 40 minutes before T0
+        poll_until(&mut pet, T0 + 24 * HOUR, POLL, idle_since(T0 - 40 * MINUTE));
+        assert!(pet.is_alive);
+        assert_eq!(pet.happiness, 80); // no decay while away
+        assert_eq!(pet.hunger, 30); // stops at AWAY_HUNGER_FLOOR
+        assert_eq!(pet.energy, 100);
+        assert_eq!(pet.activity, Activity::Idle);
+    }
+
+    #[test]
+    fn test_idle_under_threshold_uses_present_rules() {
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        // Idle 10 to 30 minutes: still present
+        poll_until(&mut pet, T0 + 20 * MINUTE, POLL, idle_since(T0 - 10 * MINUTE));
+        // 20 minutes of present decay: 0.2 * 20, 0.15 * 20, 0.1 * 20
+        assert_eq!(stats(&pet), [96, 97, 98, 100]);
+    }
+
+    #[test]
+    fn test_63h_away_with_app_running_survives() {
+        let mut pet = pet_left_at(70, 70, 50, 100);
+        // Friday 18:00 the user walks away from a Mac that stays on, polling every 5 seconds
+        poll_until(&mut pet, T0 + 63 * HOUR, POLL, idle_since(T0));
+        assert!(pet.is_alive);
+        // Same as closing the app: the first 30 minutes use the present rules
+        assert_stats_near(&pet, [30.0, 65.5, 100.0, 100.0]);
+    }
+
+    #[test]
+    fn test_unreadable_idle_counts_as_present() {
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        poll_until(&mut pet, T0 + 20 * MINUTE, POLL, |_| 0);
+        assert_eq!(stats(&pet), [96, 97, 98, 100]);
+    }
+
+    #[test]
+    fn test_gap_and_idle_take_the_larger_away_part() {
+        // A 2 hour gap where the user had been idle for 3 hours: idle covers the whole gap
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        pet.update_at(T0 + 2 * HOUR, (3 * HOUR) as u64);
+        assert_eq!(pet.happiness, 100);
+        // A 2 hour gap with fresh input: the gap rule still keeps only 30 minutes present
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        pet.update_at(T0 + 2 * HOUR, 0);
+        assert_eq!(pet.happiness, 96); // 100 - 0.15 * 30 = 95.5
+    }
+
+    // Fractions are carried between updates (P2, F0)
+    fn full_stats(pet: &PetState) -> [f64; 4] {
+        [
+            f64::from(pet.hunger) + pet.hunger_frac,
+            f64::from(pet.happiness) + pet.happiness_frac,
+            f64::from(pet.energy) + pet.energy_frac,
+            f64::from(pet.health) + pet.health_frac,
+        ]
+    }
+
+    #[test]
+    fn test_twelve_5s_updates_equal_one_60s_update() {
+        let mut polled = pet_left_at(50, 50, 50, 50);
+        poll_until(&mut polled, T0 + MINUTE, POLL, |_| 0);
+        let mut once = pet_left_at(50, 50, 50, 50);
+        once.update_at(T0 + MINUTE, 0);
+
+        assert_eq!(stats(&polled), stats(&once));
+        for (p, o) in full_stats(&polled).iter().zip(full_stats(&once)) {
+            assert!((p - o).abs() < 1e-9, "{:?} vs {:?}", full_stats(&polled), full_stats(&once));
+        }
+        // And the minute actually counted: hunger 50 - 0.2
+        assert!((full_stats(&polled)[0] - 49.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_one_hour_of_5s_updates_matches_rate_times_minutes() {
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        poll_until(&mut pet, T0 + HOUR, POLL, |_| 0);
+        // 0.2 * 60 = 12, 0.15 * 60 = 9, 0.1 * 60 = 6. The truncating version lost all of it
+        assert_eq!(stats(&pet), [88, 91, 94, 100]);
+    }
+
+    #[test]
+    fn test_save_without_fraction_fields_still_loads() {
+        let mut json = serde_json::to_value(pet_left_at(70, 60, 50, 40)).unwrap();
+        let fields = json.as_object_mut().unwrap();
+        for key in ["hunger_frac", "happiness_frac", "energy_frac", "health_frac"] {
+            assert!(fields.remove(key).is_some(), "{} should be saved", key);
+        }
+        let pet: PetState = serde_json::from_value(json).unwrap();
+        assert_eq!(stats(&pet), [70, 60, 50, 40]);
+        assert_eq!(full_stats(&pet), [70.0, 60.0, 50.0, 40.0]);
+    }
+
+    #[test]
+    fn test_public_stats_stay_whole_numbers_in_json() {
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        pet.update_at(T0 + 7, 0);
+        let json = serde_json::to_value(&pet).unwrap();
+        for key in ["hunger", "happiness", "energy", "health"] {
+            assert!(json[key].is_u64(), "{} should be an integer, got {}", key, json[key]);
+        }
+    }
+
+    // Step by step integration (F0-3)
+    #[test]
+    fn test_sleep_end_splits_the_update() {
+        let mut pet = pet_left_at(80, 80, 50, 100);
+        pet.activity = Activity::Sleeping;
+        pet.activity_until = Some(T0 + 10 * MINUTE);
+        pet.update_at(T0 + 30 * MINUTE, 0);
+        // 10 sleeping minutes: hunger -1, energy +5. Then 20 awake minutes: hunger -4, happiness -3, energy -2
+        assert_eq!(stats(&pet), [75, 77, 53, 100]);
+        assert_eq!(pet.activity, Activity::Idle);
+    }
+
+    #[test]
+    fn test_health_recovery_is_judged_every_minute() {
+        let mut pet = pet_left_at(52, 80, 80, 50);
+        pet.update_at(T0 + 30 * MINUTE, 0);
+        // hunger stays above 50 for the first 10 minutes only: +0.3 * 10
+        assert_eq!(pet.hunger, 46);
+        assert_eq!(pet.health, 53);
+    }
+
+    // F4: time to death while present the whole time, multiplier 1.0 (every stage until the Companion MVP)
+    #[test]
+    fn test_f4_continuous_presence_dies_at_t_allzero() {
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        poll_until(&mut pet, T0 + 30 * HOUR, MINUTE, |_| 0);
+        assert!(!pet.is_alive);
+        let minutes = (pet.last_update - T0) / MINUTE;
+        // T_allzero = max(100/0.2, 100/0.15, 100/0.1) = 1000 min, before T_health = 90/0.2 + 100/0.05 = 2450 min
+        assert!((990..=1000).contains(&minutes), "died after {} minutes", minutes);
+        assert!(pet.health > 0, "should die of neglect, not health");
+    }
+
+    /// Present `hours_per_day` from 9:00 on weekdays, away the rest of the time, the app always running.
+    /// Returns (business day of death, scheduled present hours, present hours including the 30 minute borders).
+    fn f4_schedule_death(hours_per_day: i64) -> (i64, f64, f64) {
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        let monday_9am = T0;
+        let mut last_input = monday_9am;
+        let mut scheduled = 0;
+        let mut borders = 0;
+        let mut now = monday_9am;
+        while pet.is_alive {
+            let since_monday = now - monday_9am;
+            let (day, time_of_day) = (since_monday / DAY, since_monday % DAY);
+            let weekday = day % 7 < 5;
+            let at_desk = weekday && time_of_day < hours_per_day * HOUR;
+            if at_desk {
+                last_input = now;
+            }
+            now += MINUTE;
+            let idle = (now - last_input).max(0) as u64;
+            pet.update_at(now, idle);
+            if at_desk {
+                scheduled += MINUTE;
+            } else if idle <= super::super::needs::AWAY_THRESHOLD_SECS {
+                borders += MINUTE;
+            }
+            assert!(day < 60, "never died");
+        }
+        let day = (pet.last_update - 1 - monday_9am) / DAY;
+        let business_day = day / 7 * 5 + day % 7 + 1;
+        let hours = |secs: i64| secs as f64 / HOUR as f64;
+        (business_day, hours(scheduled), hours(scheduled + borders))
+    }
+
+    #[test]
+    fn test_f4_table_nine_hours_a_day() {
+        // Design F4: multiplier 1.0, 9 h/day -> 5th business day (38.8 / 40.8 present hours)
+        let (business_day, scheduled, with_borders) = f4_schedule_death(9);
+        assert_eq!(business_day, 5);
+        assert!((scheduled - 38.8).abs() <= 0.25, "scheduled {}", scheduled);
+        assert!((with_borders - 40.8).abs() <= 0.25, "with borders {}", with_borders);
+    }
+
+    #[test]
+    fn test_f4_table_four_hours_a_day() {
+        // Design F4: multiplier 1.0, 4 h/day -> 9th business day (35.5 / 39.5 present hours)
+        let (business_day, scheduled, with_borders) = f4_schedule_death(4);
+        assert_eq!(business_day, 9);
+        assert!((scheduled - 35.5).abs() <= 0.25, "scheduled {}", scheduled);
+        assert!((with_borders - 39.5).abs() <= 0.25, "with borders {}", with_borders);
     }
 }

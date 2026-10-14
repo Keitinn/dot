@@ -27,6 +27,10 @@ pub fn revive(pet: &mut PetState) {
     pet.happiness = 100;
     pet.energy = 100;
     pet.health = 100;
+    pet.hunger_frac = 0.0;
+    pet.happiness_frac = 0.0;
+    pet.energy_frac = 0.0;
+    pet.health_frac = 0.0;
     pet.is_alive = true;
     pet.birth_time = now;
     pet.last_update = now;
@@ -118,5 +122,22 @@ mod tests {
         assert!(pet.activity_until.is_none());
         assert!(pet.last_feed_time.is_none());
         assert!(pet.last_play_time.is_none());
+    }
+
+    #[test]
+    fn test_revive_clears_carried_fractions() {
+        let mut pet = PetState::new();
+        pet.is_alive = false;
+        pet.hunger_frac = -0.4;
+        pet.happiness_frac = 0.3;
+        pet.energy_frac = -0.2;
+        pet.health_frac = 0.1;
+
+        revive(&mut pet);
+
+        assert_eq!(
+            [pet.hunger_frac, pet.happiness_frac, pet.energy_frac, pet.health_frac],
+            [0.0; 4]
+        );
     }
 }

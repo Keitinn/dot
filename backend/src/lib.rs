@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod game_session;
 pub mod pet;
+pub mod signals;
 pub mod storage;
 
 use std::path::Path;
