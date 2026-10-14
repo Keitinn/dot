@@ -650,13 +650,15 @@ pub(crate) fn set_sync_settings_at(
     at: Moment,
     dir: Option<&Path>,
 ) -> Result<SyncSettingsView, String> {
+    // Checked with no lock held: a slow disk never holds up the pet
+    let folder = path.map(crate::sync::settings::validate_folder).transpose()?;
     let on = {
         let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
         let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
         let stats = state.stats.lock().map_err(|e| e.to_string())?;
         let mut sync = lock_sync(state)?;
-        if let Some(path) = path {
-            sync.set_folder(path)?;
+        if let Some(folder) = folder {
+            sync.set_folder(folder)?;
         }
         match enabled {
             Some(true) => sync.enable(&mut pet, &mut companion, &stats)?,

@@ -36,6 +36,10 @@ pub const CACHE_FILE: &str = "sync-cache.json";
 /// A folder slower than this (an evicted iCloud file downloading, a sleeping
 /// network disk) is given up on for this time; the last good copies stay.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a write into the folder may hold the game up. The game's locks
+/// are held meanwhile, so this is short; a write still running after it is
+/// left to finish on its own and the next ones are skipped until it does.
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Passive slots before this (2023-01-01 UTC) are not taken in from a file.
 pub const PASSIVE_EPOCH: i64 = 1_672_531_200;
 
@@ -126,6 +130,11 @@ pub struct SyncRuntime {
     status: Status,
     /// A read of the folder is running.
     reading: Arc<AtomicBool>,
+    /// A write into the folder is running.
+    writing: Arc<AtomicBool>,
+    /// For tests: each write into the folder takes this long first.
+    #[cfg(test)]
+    pub(crate) slow_write_for_test: Option<Duration>,
 }
 
 impl SyncRuntime {
@@ -141,6 +150,9 @@ impl SyncRuntime {
             saved: None,
             status: Status::default(),
             reading: Arc::new(AtomicBool::new(false)),
+            writing: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            slow_write_for_test: None,
         }
     }
 
@@ -193,8 +205,9 @@ impl SyncRuntime {
         }
     }
 
-    /// Loads the device id, the ledger and the cache.
-    fn start(&mut self) -> Result<(), String> {
+    /// Loads the device id, the ledger and the cache. Returns whether a
+    /// ledger was kept here, which means the old save went into it already.
+    fn start(&mut self) -> Result<bool, String> {
         let dir = self.local_dir.clone().ok_or_else(|| ERR_NO_SAVE_DIR.to_string())?;
         let device_id = device::load_or_create_in(&dir, &self.hardware.uuid())
             .map_err(|e| {
@@ -203,7 +216,9 @@ impl SyncRuntime {
             })?
             .device_id;
         let mut cache: SyncCache = load_local(&dir.join(CACHE_FILE)).unwrap_or_default();
-        let own = match load_local::<DeviceSnapshot>(&dir.join(LEDGER_FILE)) {
+        let kept = load_local::<DeviceSnapshot>(&dir.join(LEDGER_FILE));
+        let had_ledger = kept.is_some();
+        let own = match kept {
             Some(ledger) if ledger.device_id == device_id => ledger,
             Some(other) => {
                 // device.json was made again, or came from another Mac: that
@@ -222,7 +237,7 @@ impl SyncRuntime {
         self.seen = None;
         self.written = None;
         self.saved = None;
-        Ok(())
+        Ok(had_ledger)
     }
 
     /// Sync is on in the settings but could not start. What is done meanwhile
@@ -233,10 +248,10 @@ impl SyncRuntime {
         }
     }
 
-    /// Checks and saves the folder. An invalid one changes nothing.
-    pub fn set_folder(&mut self, raw: &str) -> Result<(), String> {
+    /// Saves a folder `settings::validate_folder` accepted. Checking it
+    /// touches the folder, so it is done before any lock is taken.
+    pub fn set_folder(&mut self, path: PathBuf) -> Result<(), String> {
         let dir = self.local_dir.clone().ok_or_else(|| ERR_NO_SAVE_DIR.to_string())?;
-        let path = settings::validate_folder(raw)?;
         if self.settings.path.as_ref() == Some(&path) {
             return Ok(());
         }
@@ -261,11 +276,15 @@ impl SyncRuntime {
         if self.settings.path.is_none() {
             return Err(ERR_NO_FOLDER_SET.to_string());
         }
-        self.start()?;
+        let had_ledger = self.start()?;
         let mut next = self.settings.clone();
         let own = self.own.as_mut().expect("start sets the ledger");
         let mut revived_while_off = false;
-        if !next.migrated {
+        if !next.migrated && had_ledger {
+            // The settings file was lost, not the ledger: the stats hold the
+            // other Macs' share by now and must not become this Mac's
+            next.migrated = true;
+        } else if !next.migrated {
             let device_id = own.device_id.clone();
             own.absorb(&DeviceSnapshot::from_legacy(&device_id, pet, stats, Some(companion)));
             next.migrated = true;
@@ -501,20 +520,39 @@ impl SyncRuntime {
         if self.written.as_deref() == Some(json.as_str()) {
             return;
         }
-        // An unmounted disk: never create its path on the startup disk
-        if !root.is_dir() {
-            self.status.write_error = Some(ERR_NO_FOLDER.to_string());
+        // The last write is stuck (a network disk that stopped answering):
+        // this one waits for the next tick rather than for that one
+        if self.writing.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            self.status.write_error = Some(ERR_TIMEOUT.to_string());
             return;
         }
-        match folder::write_own(root, own) {
-            Ok(_) => {
+        let (root, own, writing) = (root.clone(), own.clone(), Arc::clone(&self.writing));
+        #[cfg(test)]
+        let slow = self.slow_write_for_test;
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new().name("dot-sync-write".into()).spawn(move || {
+            #[cfg(test)]
+            if let Some(slow) = slow {
+                std::thread::sleep(slow);
+            }
+            let result = write_into(&root, &own);
+            // Free before the answer, so the next write never finds it taken
+            writing.store(false, Ordering::Release);
+            let _ = tx.send(result);
+        });
+        if let Err(e) = spawned {
+            eprintln!("Could not start the sync write: {}", e);
+            self.writing.store(false, Ordering::Release);
+            self.status.write_error = Some(ERR_CANNOT_WRITE.to_string());
+            return;
+        }
+        match rx.recv_timeout(WRITE_TIMEOUT) {
+            Ok(Ok(())) => {
                 self.written = Some(json);
                 self.status.write_error = None;
             }
-            Err(e) => {
-                eprintln!("Could not write to the sync folder: {}", e);
-                self.status.write_error = Some(ERR_CANNOT_WRITE.to_string());
-            }
+            Ok(Err(error)) => self.status.write_error = Some(error),
+            Err(_) => self.status.write_error = Some(ERR_TIMEOUT.to_string()),
         }
     }
 
@@ -569,7 +607,9 @@ impl SyncRuntime {
             Fetched::Read { cache, skipped, signature } => {
                 self.cache.join(&cache);
                 self.take_in_own_copies(now);
-                self.seen = Some(signature);
+                // A file skipped this time is read again on the next tick,
+                // even if it looks the same
+                self.seen = (skipped == 0).then_some(signature);
                 self.status.unreadable = skipped;
                 self.mark_synced(now);
                 self.persist_cache();
@@ -680,6 +720,18 @@ fn signature(root: &Path, own_id: &str) -> io::Result<Signature> {
     }
     signature.sort();
     Ok(signature)
+}
+
+/// Writes this Mac's file, on the thread `SyncRuntime::write` starts.
+fn write_into(root: &Path, own: &DeviceSnapshot) -> Result<(), String> {
+    // An unmounted disk: never create its path on the startup disk
+    if !root.is_dir() {
+        return Err(ERR_NO_FOLDER.to_string());
+    }
+    folder::write_own(root, own).map(|_| ()).map_err(|e| {
+        eprintln!("Could not write to the sync folder: {}", e);
+        ERR_CANNOT_WRITE.to_string()
+    })
 }
 
 fn load_local<T: DeserializeOwned>(path: &Path) -> Option<T> {

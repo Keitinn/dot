@@ -16,7 +16,7 @@ use crate::{storage, AppState};
 use super::device::DEVICE_FILE;
 use super::folder::{CONFLICTS_DIR, DEVICES_DIR};
 use super::passive::slot_of;
-use super::runtime::{CACHE_FILE, ERR_NO_FOLDER_SET, LEDGER_FILE, PASSIVE_EPOCH};
+use super::runtime::{CACHE_FILE, ERR_NO_FOLDER_SET, ERR_TIMEOUT, LEDGER_FILE, PASSIVE_EPOCH, WRITE_TIMEOUT};
 use super::settings::{self, SETTINGS_FILE};
 use super::{DeviceSnapshot, Hardware, SyncStatusView};
 
@@ -579,6 +579,72 @@ fn turning_sync_on_for_an_old_save_changes_nothing_and_never_migrates_twice() {
     assert_eq!(mac.app.sync.lock().unwrap().ledger().unwrap().counters.feeds, 0);
     assert_eq!(json(&mac.stats()), before.1);
     assert_eq!(mac.app.companion.lock().unwrap().bond, 321);
+}
+
+#[test]
+fn a_lost_settings_file_does_not_migrate_the_merged_save_again() {
+    let folder = TempDir::new();
+    let t = Utc::now().timestamp();
+    let (a, mut b) = two_macs_with_one_pet(&folder, t);
+    b.sync(at(t));
+    // B's stats now hold A's 10 coins, merged
+    assert_eq!(b.stats().coins, 10);
+
+    fs::write(b.home.path().join(SETTINGS_FILE), "{ broken").unwrap();
+    let _ = fs::remove_file(b.home.path().join(format!("{}.bak", SETTINGS_FILE)));
+    b.restart();
+    assert!(!b.status().enabled);
+    b.turn_on(&folder, at(t));
+    a.sync(at(t));
+
+    assert_eq!(b.app.sync.lock().unwrap().ledger().unwrap().coins.earned, 0);
+    assert_eq!(b.stats().coins, 10);
+    assert_eq!(a.stats().coins, 10);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_skipped_file_is_read_again_on_the_next_tick() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = TempDir::new();
+    let t = Utc::now().timestamp();
+    let (a, b) = two_macs_with_one_pet(&folder, t);
+    b.sync(at(t));
+    a.feed(now_moment());
+    let a_file = a.device_file(&folder);
+
+    // Unreadable for a moment; chmod leaves the size and the modification time
+    fs::set_permissions(&a_file, fs::Permissions::from_mode(0o000)).unwrap();
+    b.sync(now_moment());
+    fs::set_permissions(&a_file, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(b.status().unreadable, 1);
+    assert_eq!(b.stats().total_feeds, 0);
+
+    b.sync(now_moment());
+    assert_eq!(b.status().unreadable, 0);
+    assert_eq!(b.stats().total_feeds, 1);
+}
+
+#[test]
+fn a_folder_that_hangs_on_write_holds_the_game_up_only_briefly() {
+    let folder = TempDir::new();
+    let t = Utc::now().timestamp();
+    let (a, _b) = two_macs_with_one_pet(&folder, t);
+    a.app.sync.lock().unwrap().slow_write_for_test = Some(WRITE_TIMEOUT * 4);
+
+    let started = Instant::now();
+    a.feed(now_moment());
+    let first = started.elapsed();
+    assert!(first < WRITE_TIMEOUT * 2, "first write held the game for {:?}", first);
+    assert_eq!(a.status().error.as_deref(), Some(ERR_TIMEOUT));
+
+    // The stuck write is still running: the next ones do not wait for it
+    let started = Instant::now();
+    a.app.pet.lock().unwrap().last_play_time = None;
+    care_at(&a.app, CareKind::Play, GameStats::record_play, now_moment().now, today(), a.dir()).unwrap();
+    a.sync(now_moment());
+    assert!(started.elapsed() < WRITE_TIMEOUT, "later writes waited {:?}", started.elapsed());
+    assert_eq!(a.stats().total_plays, 1);
 }
 
 // --- Bad input ---
