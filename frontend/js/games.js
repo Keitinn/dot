@@ -11,6 +11,11 @@ import {
     judgeBlackjack,
     minPlayMs,
     rewardText,
+    settleText,
+    canGuess,
+    typeDigit,
+    hitBlowRowText,
+    hitBlowSlots,
 } from './games-logic.js';
 
 const HAND_ICON = { rock: '✊', paper: '✋', scissors: '✌️' };
@@ -97,6 +102,7 @@ export class GamesUI {
 
     setScreen(title, withBack) {
         this.clearTimer();
+        this.screenId = (this.screenId || 0) + 1;
         this.title.textContent = title;
         this.backBtn.classList.toggle('hidden', !withBack);
         this.body.innerHTML = '';
@@ -128,6 +134,68 @@ export class GamesUI {
         }
     }
 
+    // ---------- Games whose answer stays in Rust ----------
+    // Every move goes through game_step and Rust decides the coins, so these
+    // reports carry no outcome.
+
+    // True while the screen that asked is still shown.
+    liveCheck() {
+        const id = this.screenId;
+        return () => id === this.screenId && !this.overlay.classList.contains('hidden');
+    }
+
+    // Resolves after `ms`; never resolves if the screen changes first.
+    wait(ms) {
+        return new Promise((resolve) => {
+            this.timer = setTimeout(() => {
+                this.timer = null;
+                resolve();
+            }, ms);
+        });
+    }
+
+    // Resolves to { token, startedAt, result } with the first look, or null.
+    async play(game) {
+        const startedAt = Date.now();
+        try {
+            const token = await this.api.startGame(game);
+            const result = await this.api.gameStep(token, { type: 'look' });
+            return { token, startedAt, result };
+        } catch (e) {
+            console.error('Failed to start game:', e);
+            return null;
+        }
+    }
+
+    // Resolves to the StepResult, or null when Rust refused the move.
+    async move(play, input) {
+        try {
+            return await this.api.gameStep(play.token, input);
+        } catch (e) {
+            console.error('Game move refused:', e);
+            return null;
+        }
+    }
+
+    // Reports a finished game. Resolves to the RewardResult, or null when refused.
+    async settle(play, game, result) {
+        try {
+            const wait = minPlayMs(game, result.moves) + REPORT_MARGIN_MS - (Date.now() - play.startedAt);
+            if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+            const r = await this.api.reportGameResult(play.token, game, 'done', null);
+            this.onReward(r);
+            return r;
+        } catch (e) {
+            console.error('Failed to report game result:', e);
+            return null;
+        }
+    }
+
+    // Shown when a game could not start; NEW GAME tries again.
+    showStartFailed(again) {
+        this.body.append(el('div', 'game-result', 'TRY AGAIN'), button('NEW GAME', again));
+    }
+
     bump(game, key) {
         const g = (this.record[game] = this.record[game] || {});
         g[key] = (g[key] || 0) + 1;
@@ -141,7 +209,89 @@ export class GamesUI {
         list.appendChild(button('JANKEN', () => this.showJanken(), 'game-menu-btn'));
         list.appendChild(button('MEMORY', () => this.showMemory(), 'game-menu-btn'));
         list.appendChild(button('BLACKJACK', () => this.showBlackjack(), 'game-menu-btn'));
+        list.appendChild(button('HIT & BLOW', () => this.showHitBlow(), 'game-menu-btn'));
         this.body.appendChild(list);
+    }
+
+    // ---------- HIT & BLOW ----------
+    async showHitBlow() {
+        this.setScreen('HIT & BLOW', true);
+        const live = this.liveCheck();
+        const rec = (this.record.hit_blow = this.record.hit_blow || {});
+        const play = await this.play('hit_blow');
+        if (!live()) return;
+        if (!play) return this.showStartFailed(() => this.showHitBlow());
+
+        let typed = [];
+        let busy = false;
+        const slots = el('div', 'game-result hb-slots', '');
+        const history = el('div', 'hb-history');
+        const info = el('div', 'game-note', '');
+        const result = el('div', 'game-result', '');
+        const keypad = el('div', 'hb-keypad');
+        const controls = el('div', 'game-row');
+
+        const render = (view) => {
+            slots.textContent = view.answer ? view.answer.join(' ') : hitBlowSlots(typed);
+            history.innerHTML = '';
+            for (const row of view.guesses) history.appendChild(el('div', 'hb-row', hitBlowRowText(row)));
+            info.textContent = `LEFT ${view.left}  BEST ${rec.best ?? '-'}`;
+            for (const key of keypad.children) {
+                key.disabled = busy || !!view.answer || typed.includes(Number(key.dataset.digit));
+            }
+            ok.disabled = busy || !!view.answer || !canGuess(typed);
+            del.disabled = busy || !!view.answer || typed.length === 0;
+        };
+
+        let view = play.result.view;
+        for (let d = 0; d <= 9; d++) {
+            const key = button(String(d), () => {
+                typed = typeDigit(typed, d);
+                render(view);
+            }, 'game-btn hb-key');
+            key.dataset.digit = String(d);
+            keypad.appendChild(key);
+        }
+        const del = button('DEL', () => {
+            typed = typed.slice(0, -1);
+            render(view);
+        });
+        const ok = button('OK', async () => {
+            if (!canGuess(typed)) return;
+            busy = true;
+            render(view);
+            const r = await this.move(play, { type: 'guess', digits: typed });
+            if (!live()) return;
+            busy = false;
+            if (!r) {
+                result.textContent = 'TRY AGAIN';
+                render(view);
+                return;
+            }
+            typed = [];
+            view = r.view;
+            result.textContent = '';
+            render(view);
+            if (r.finished) finish(r);
+        });
+        controls.append(del, ok);
+
+        const finish = (r) => {
+            const base = view.solved ? `CLEAR! ${view.guesses.length} GUESSES` : 'OUT OF GUESSES';
+            result.textContent = base;
+            if (view.solved && (rec.best === undefined || view.guesses.length < rec.best)) {
+                rec.best = view.guesses.length;
+                saveRecord(this.record);
+            }
+            controls.innerHTML = '';
+            controls.appendChild(button('NEW GAME', () => this.showHitBlow()));
+            this.settle(play, 'hit_blow', r).then((reward) => {
+                if (live()) result.textContent = base + settleText(reward);
+            });
+        };
+
+        this.body.append(el('div', 'game-note', '3 DIGITS, NO REPEATS. H=SPOT B=DIGIT'), slots, history, keypad, controls, info, result);
+        render(view);
     }
 
     // ---------- Janken ----------

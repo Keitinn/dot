@@ -2,8 +2,12 @@
 //! time through `game_step` and sees only what that move reveals; the coins
 //! of a finished game come from this state, never from the UI's report.
 
+pub mod hit_blow;
+
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+
+use hit_blow::HitBlow;
 
 /// One move sent by the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -11,6 +15,8 @@ use serde::{Deserialize, Serialize};
 pub enum StepInput {
     /// Shows the game as it is, without moving
     Look,
+    /// HIT & BLOW: 3 distinct digits
+    Guess { digits: Vec<u8> },
 }
 
 /// A finished game: its coins before the daily cap, and the count
@@ -35,32 +41,49 @@ pub struct StepResult {
 /// The part of a game the player may see.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "game", rename_all = "snake_case")]
-pub enum View {}
+pub enum View {
+    HitBlow(hit_blow::View),
+}
 
 /// A game in progress, with its secret.
 #[derive(Debug, Clone)]
-pub enum GameState {}
+pub enum GameState {
+    HitBlow(HitBlow),
+}
 
 impl GameState {
     /// `None` for a game the UI plays on its own (janken, memory, blackjack).
     pub fn new(game: &str, rng: &mut impl Rng) -> Option<Self> {
-        let _ = (game, rng);
-        None
+        match game {
+            "hit_blow" => Some(Self::HitBlow(HitBlow::new(rng))),
+            _ => None,
+        }
     }
 
     pub fn settled(&self) -> Option<Settled> {
-        match *self {}
+        match self {
+            Self::HitBlow(g) => g.settled(),
+        }
     }
 
+    /// A move that does not fit the game is refused and changes nothing.
     pub fn step(&mut self, input: &StepInput) -> Result<StepResult, String> {
         if self.settled().is_some() && *input != StepInput::Look {
             return Err("game is over".to_string());
         }
-        match *self {}
+        match (&mut *self, input) {
+            (_, StepInput::Look) => {}
+            (Self::HitBlow(g), StepInput::Guess { digits }) => {
+                g.guess(digits)?;
+            }
+        }
+        Ok(self.result())
     }
 
     fn view(&self) -> View {
-        match *self {}
+        match self {
+            Self::HitBlow(g) => View::HitBlow(g.view()),
+        }
     }
 
     fn result(&self) -> StepResult {

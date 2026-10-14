@@ -110,8 +110,43 @@ export function minPlayMs(game, moves = 0) {
         case 'janken': return 1000;
         case 'blackjack': return 3000;
         case 'memory': return Math.max(4000, 500 * (moves || 0));
+        // Games checked in Rust: `moves` is the count game_step returned when finished
+        case 'hit_blow': return Math.max(3000, 1000 * (moves || 0));
         default: return 0;
     }
+}
+
+/** rewardText for the games checked in Rust, where a refused report is shown, not hidden. */
+export function settleText(r) {
+    return r ? rewardText(r) : ' TRY AGAIN';
+}
+
+// ---------- HIT & BLOW (the answer stays in Rust) ----------
+export const HIT_BLOW_DIGITS = 3;
+
+/** 3 distinct digits 0-9: what game_step accepts as a guess. */
+export function canGuess(digits) {
+    return (
+        digits.length === HIT_BLOW_DIGITS &&
+        digits.every((d) => Number.isInteger(d) && d >= 0 && d <= 9) &&
+        new Set(digits).size === digits.length
+    );
+}
+
+/** The typed digits after tapping `d`: a repeat or a 4th digit is ignored. */
+export function typeDigit(typed, d) {
+    if (typed.length >= HIT_BLOW_DIGITS || typed.includes(d)) return typed;
+    return [...typed, d];
+}
+
+export function hitBlowSlots(typed) {
+    const slots = [];
+    for (let i = 0; i < HIT_BLOW_DIGITS; i++) slots.push(i < typed.length ? String(typed[i]) : '_');
+    return slots.join(' ');
+}
+
+export function hitBlowRowText(row) {
+    return `${row.digits.join('')} ${row.hit}H ${row.blow}B`;
 }
 
 /** Suffix for a result line: coins earned, and DAILY LIMIT when the cap cut the reward. */

@@ -13,6 +13,11 @@ import {
     SUITS,
     minPlayMs,
     rewardText,
+    settleText,
+    canGuess,
+    typeDigit,
+    hitBlowRowText,
+    hitBlowSlots,
 } from '../frontend/js/games-logic.js';
 
 const c = (rank, suit = '♠') => ({ rank, suit });
@@ -113,6 +118,47 @@ test('reward: minimum play time matches the backend (game_session.rs)', () => {
     assert.equal(minPlayMs('memory', 4), 4000); // 4 s floor
     assert.equal(minPlayMs('memory', 9), 4500); // 0.5 s per move
     assert.equal(minPlayMs('poker'), 0);
+});
+
+// The same cases as `minimum_play_times` in backend/src/game_session.rs.
+const RUST_MIN_PLAY_MS = [
+    ['hit_blow', 1, 3000],
+    ['hit_blow', 3, 3000],
+    ['hit_blow', 8, 8000],
+];
+
+test('reward: minimum play time of the Rust-checked games matches game_session.rs', () => {
+    for (const [game, moves, ms] of RUST_MIN_PLAY_MS) {
+        assert.equal(minPlayMs(game, moves), ms, `${game} ${moves}`);
+    }
+});
+
+test('reward: a failed report says TRY AGAIN instead of nothing', () => {
+    assert.equal(settleText(null), ' TRY AGAIN');
+    assert.equal(settleText({ earned: 3, capped: false }), ' +$3');
+    assert.equal(settleText({ earned: 0, capped: true }), ' DAILY LIMIT');
+});
+
+test('hit & blow: a guess is 3 distinct digits', () => {
+    assert.equal(canGuess([1, 2, 3]), true);
+    assert.equal(canGuess([0, 9, 8]), true);
+    assert.equal(canGuess([1, 2]), false);
+    assert.equal(canGuess([1, 1, 2]), false);
+    assert.equal(canGuess([1, 2, 3, 4]), false);
+    assert.equal(canGuess([1, 2, 10]), false);
+});
+
+test('hit & blow: typing digits skips repeats and stops at 3', () => {
+    assert.deepEqual(typeDigit([], 4), [4]);
+    assert.deepEqual(typeDigit([4], 4), [4]);
+    assert.deepEqual(typeDigit([4, 0], 7), [4, 0, 7]);
+    assert.deepEqual(typeDigit([4, 0, 7], 1), [4, 0, 7]);
+});
+
+test('hit & blow: rows and slots read as text', () => {
+    assert.equal(hitBlowRowText({ digits: [0, 1, 2], hit: 1, blow: 2 }), '012 1H 2B');
+    assert.equal(hitBlowSlots([]), '_ _ _');
+    assert.equal(hitBlowSlots([5, 0]), '5 0 _');
 });
 
 test('reward: text shows coins and the daily limit', () => {

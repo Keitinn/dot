@@ -26,6 +26,8 @@ pub fn min_play_time(game: &str, moves: Option<u32>) -> Option<Duration> {
             let by_moves = Duration::from_millis(500) * moves.unwrap_or(0);
             Some(by_moves.max(Duration::from_secs(4)))
         }
+        // A second per guess: 3 digits to tap, then OK
+        "hit_blow" => Some((Duration::from_secs(1) * moves.unwrap_or(0)).max(Duration::from_secs(3))),
         _ => None,
     }
 }
@@ -176,7 +178,8 @@ pub fn claim_reward(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::minigames::StepInput;
+    use crate::minigames::hit_blow::HitBlow;
+    use crate::minigames::{StepInput, View as MiniView};
     use crate::pet::economy::DAILY_GAME_COIN_CAP;
 
     const DAY: &str = "2026-10-14";
@@ -352,6 +355,173 @@ mod tests {
         assert_eq!(r.earned, 2);
     }
 
+    /// Starts `game` and swaps in a state with a known answer.
+    fn start_with(sessions: &mut GameSessions, game: &str, state: GameState, t0: Instant) -> String {
+        let token = sessions.start(game, t0).unwrap();
+        sessions.pending.get_mut(&token).unwrap().state = Some(state);
+        token
+    }
+
+    fn guess(digits: [u8; 3]) -> StepInput {
+        StepInput::Guess { digits: digits.to_vec() }
+    }
+
+    fn hit_blow(sessions: &mut GameSessions, answer: [u8; 3], t0: Instant) -> String {
+        start_with(sessions, "hit_blow", GameState::HitBlow(HitBlow::with_answer(answer)), t0)
+    }
+
+    #[test]
+    fn hit_blow_pays_by_its_own_count_whatever_the_ui_reports() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+        sessions.step(&token, &guess([4, 5, 6]), t0 + secs(1)).unwrap();
+        let last = sessions.step(&token, &guess([1, 2, 3]), t0 + secs(2)).unwrap();
+        assert!(last.finished);
+        assert_eq!((last.moves, last.reward), (Some(2), Some(7)));
+
+        // The UI claims a first-try clear; the state says 2 guesses
+        let r = claim(&mut sessions, &mut stats, &token, "hit_blow", "clear", Some(1), t0 + secs(5)).unwrap();
+
+        assert_eq!(r, GameReward { earned: 7, capped: false });
+        assert_eq!(stats.coins, 7);
+    }
+
+    #[test]
+    fn hit_blow_unfinished_pays_nothing_and_uses_up_the_token() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+        sessions.step(&token, &guess([4, 5, 6]), t0 + secs(1)).unwrap();
+
+        assert!(claim(&mut sessions, &mut stats, &token, "hit_blow", "clear", Some(1), t0 + secs(30)).is_err());
+        assert_eq!(stats.coins, 0);
+        assert!(sessions.step(&token, &guess([1, 2, 3]), t0 + secs(31)).is_err());
+        assert!(claim(&mut sessions, &mut stats, &token, "hit_blow", "clear", None, t0 + secs(32)).is_err());
+    }
+
+    #[test]
+    fn hit_blow_failed_game_pays_nothing() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+        for _ in 0..8 {
+            sessions.step(&token, &guess([4, 5, 6]), t0).unwrap();
+        }
+
+        let r = claim(&mut sessions, &mut stats, &token, "hit_blow", "clear", Some(1), t0 + secs(8)).unwrap();
+
+        assert_eq!(r, GameReward { earned: 0, capped: false });
+    }
+
+    #[test]
+    fn hit_blow_bad_guess_is_refused_without_using_a_try() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+
+        assert!(sessions.step(&token, &guess([1, 1, 2]), t0).is_err());
+        assert!(sessions.step(&token, &StepInput::Guess { digits: vec![1, 2] }, t0).is_err());
+
+        let look = sessions.step(&token, &StepInput::Look, t0).unwrap();
+        let MiniView::HitBlow(view) = look.view else { panic!("not hit & blow") };
+        assert_eq!(view.left, 8);
+    }
+
+    #[test]
+    fn hit_blow_never_shows_the_answer_before_the_end() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = hit_blow(&mut sessions, [7, 8, 9], t0);
+        for input in [StepInput::Look, guess([1, 2, 3]), guess([7, 9, 8])] {
+            let json = serde_json::to_value(sessions.step(&token, &input, t0).unwrap()).unwrap();
+            assert_eq!(json["view"]["answer"], serde_json::Value::Null, "{json}");
+            assert_eq!(json["finished"], false);
+            assert_eq!(json["reward"], serde_json::Value::Null);
+        }
+        let end = serde_json::to_value(sessions.step(&token, &guess([7, 8, 9]), t0).unwrap()).unwrap();
+        assert_eq!(end["view"]["answer"], serde_json::json!([7, 8, 9]));
+        assert!(sessions.step(&token, &guess([7, 8, 9]), t0).is_err(), "a move after the end");
+    }
+
+    #[test]
+    fn hit_blow_is_replayed_by_the_same_seed() {
+        let t0 = Instant::now();
+        let play = |seed| {
+            let mut sessions = GameSessions::with_seed(seed);
+            let token = sessions.start("hit_blow", t0).unwrap();
+            [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 0, 1]]
+                .map(|d| sessions.step(&token, &guess(d), t0).unwrap())
+        };
+        assert_eq!(play(3), play(3));
+    }
+
+    #[test]
+    fn hit_blow_must_take_a_second_per_guess() {
+        let t0 = Instant::now();
+        // Solved on the 1st guess: 3 s floor; on the 5th: 5 x 1 s
+        for (wrong, min) in [(0, secs(3)), (4, secs(5))] {
+            let mut sessions = GameSessions::with_seed(1);
+            let mut stats = GameStats::new();
+            let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+            for _ in 0..wrong {
+                sessions.step(&token, &guess([4, 5, 6]), t0).unwrap();
+            }
+            sessions.step(&token, &guess([1, 2, 3]), t0).unwrap();
+            let early = min - Duration::from_millis(1);
+            assert!(claim(&mut sessions, &mut stats, &token, "hit_blow", "x", None, t0 + early).is_err());
+
+            let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+            for _ in 0..wrong {
+                sessions.step(&token, &guess([4, 5, 6]), t0).unwrap();
+            }
+            sessions.step(&token, &guess([1, 2, 3]), t0).unwrap();
+            assert!(claim(&mut sessions, &mut stats, &token, "hit_blow", "x", None, t0 + min).is_ok());
+        }
+    }
+
+    #[test]
+    fn hit_blow_near_the_cap_pays_only_the_remainder() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        stats.game_coins_today = 28;
+        stats.game_coins_date = Some(DAY.to_string());
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+        sessions.step(&token, &guess([1, 2, 3]), t0).unwrap();
+
+        let r = claim(&mut sessions, &mut stats, &token, "hit_blow", "x", None, t0 + secs(3)).unwrap();
+
+        assert_eq!(r, GameReward { earned: 2, capped: true });
+        assert_eq!(stats.game_coins_today, DAILY_GAME_COIN_CAP);
+    }
+
+    #[test]
+    fn a_used_token_has_no_more_steps() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+        sessions.step(&token, &guess([1, 2, 3]), t0).unwrap();
+        claim(&mut sessions, &mut stats, &token, "hit_blow", "x", None, t0 + secs(3)).unwrap();
+
+        assert!(sessions.step(&token, &StepInput::Look, t0 + secs(4)).is_err());
+        assert!(claim(&mut sessions, &mut stats, &token, "hit_blow", "x", None, t0 + secs(5)).is_err());
+        assert_eq!(stats.coins, 8);
+    }
+
+    #[test]
+    fn an_expired_token_has_no_more_steps() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = sessions.start("hit_blow", t0).unwrap();
+        assert!(sessions.step(&token, &StepInput::Look, t0 + SESSION_TTL + secs(1)).is_err());
+        assert_eq!(sessions.pending_count(), 0);
+    }
+
     #[test]
     fn minimum_play_times() {
         assert_eq!(min_play_time("janken", None), Some(secs(1)));
@@ -359,6 +529,9 @@ mod tests {
         assert_eq!(min_play_time("memory", Some(4)), Some(secs(4)));
         assert_eq!(min_play_time("memory", Some(8)), Some(secs(4)));
         assert_eq!(min_play_time("memory", Some(9)), Some(Duration::from_millis(4_500)));
+        assert_eq!(min_play_time("hit_blow", Some(1)), Some(secs(3)));
+        assert_eq!(min_play_time("hit_blow", Some(3)), Some(secs(3)));
+        assert_eq!(min_play_time("hit_blow", Some(8)), Some(secs(8)));
         assert_eq!(min_play_time("poker", None), None);
     }
 
