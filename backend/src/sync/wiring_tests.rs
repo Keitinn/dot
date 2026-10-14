@@ -189,6 +189,17 @@ fn off_runs_exactly_as_before_and_writes_no_sync_file() {
     }
     assert_eq!(local, names(reference_home.path()));
     assert!(!mac.status().enabled);
+
+    // SYNC NOW and WHICH DOT? do nothing while off
+    let stats_before = json(&mac.stats());
+    sync_now_at(&mac.app, at(t + 180), mac.dir()).unwrap();
+    assert!(choose_pet_at(&mac.app, "pet-x", at(t + 180), mac.dir()).is_err());
+    assert_eq!(json(&mac.stats()), stats_before);
+    assert!(names(folder.path()).is_empty());
+    let local = names(mac.home.path());
+    for file in [DEVICE_FILE, SETTINGS_FILE, LEDGER_FILE, CACHE_FILE] {
+        assert!(!local.contains(&file.to_string()), "{} was written: {:?}", file, local);
+    }
 }
 
 // --- Two Macs, one folder ---
@@ -457,6 +468,36 @@ fn reset_of_a_living_pet_does_not_ask_which_dot() {
     assert_eq!(a.status().choice, None);
     assert_eq!(b.status().choice, None);
     assert_eq!(b.pet().id, egg.id);
+}
+
+#[test]
+fn a_day_of_care_is_in_the_ledger_before_the_next_day_settles_it() {
+    let folder = TempDir::new();
+    let t = Utc::now().timestamp();
+    let mut adult = pet("pet-x", t);
+    adult.stage = EvolutionStage::Adult;
+    adult.age = 9 * 86_400;
+    let a = Mac::new("HW-A", &adult, &GameStats::new());
+    let b = Mac::new("HW-B", &adult, &GameStats::new());
+    let day = today();
+    let next_day = day.succ_opt().unwrap();
+    a.turn_on(&folder, at(t));
+    b.turn_on(&folder, at(t));
+
+    // Hungry, so the FEED counts for Bond on A
+    care_at(&a.app, CareKind::Feed, GameStats::record_feed, t, day, a.dir()).unwrap();
+    assert_eq!(a.app.companion.lock().unwrap().today.n_care, 1);
+    // The next day's tick settles A's day and resets the counters
+    commands::tick(&a.app, Moment { now: t, idle_secs: 0, today: next_day }, a.dir()).unwrap();
+    assert_eq!(a.app.companion.lock().unwrap().today.n_care, 0);
+
+    let recorded = a.app.sync.lock().unwrap().ledger().unwrap().bond["pet-x"].days[&day];
+    assert_eq!(recorded.n_care, 1);
+    a.sync(Moment { now: t, idle_secs: 0, today: next_day });
+    b.sync(Moment { now: t, idle_secs: 0, today: next_day });
+    let bond_a = a.app.companion.lock().unwrap().bond;
+    assert!(bond_a > 0);
+    assert_eq!(b.app.companion.lock().unwrap().bond, bond_a);
 }
 
 #[test]
