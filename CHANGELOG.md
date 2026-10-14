@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- 依存関係を更新(Tauri 2.9→2.12、`bytes`・`time`・`quick-xml` などの既知の脆弱性を修正版に)
 - Dock にアイコンが出ないようにした(起動時に activation policy を Accessory に設定)
 - ポップオーバーの上部の帯をドラッグしてウィンドウを動かせるようにした(`start-dragging` のみ許可)
 
