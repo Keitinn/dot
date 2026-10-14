@@ -7,6 +7,26 @@
 - Coins: earned from mini games, passively (1 coin every 10 minutes while the pet is alive), and as a daily care streak bonus (1 coin per streak day, up to 10). Coins carry over when the pet is revived
 - Snack shop: buy candy, cookie, cake, coffee, or medicine with coins. Snacks are independent of the FEED button and its cooldown
 
+## v1.0.3
+
+### Added
+- Sleep mechanic: sleeping lasts 1-4 hours with gradual energy recovery
+- Cooldowns: FEED 30 minutes, PLAY 20 minutes
+- Status line showing what dot is doing
+- Version label in the settings menu
+
+## v1.0.2
+
+### Changed
+- Hide the Dock icon (menu bar only, `LSUIElement` via `Info.plist`)
+- Tone down pet animations: slower, more subtle movements
+
+## v1.0.1
+
+### Changed
+- Hide the app from the Dock (`LSUIElement=true`)
+- Pin Tauri npm packages to match the Rust crate versions
+
 ## v1.0.0
 
 ### Added
@@ -14,7 +34,7 @@
 - Achievements: 10 unlockable achievements (evolution milestones, care streaks, action counters, revival)
 - Achievements panel: trophy button (+) opens a full overlay showing all badges
 - Achievement toast: brief notification when a new achievement is unlocked
-- Game stats persistence: lifetime counters saved separately from pet state (`~/.config/dot/game-stats.json`)
+- Game stats persistence: lifetime counters saved separately from pet state (`~/Library/Application Support/dot/game-stats.json`)
 - Unit tests: 57 tests covering needs decay, evolution, lifecycle, state actions, stats, and achievements
 - CI: GitHub Actions workflow for testing and building on push/PR
 - Release: GitHub Actions workflow for building and publishing `.dmg` on version tags

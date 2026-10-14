@@ -8,7 +8,7 @@ A Tamagotchi-style menu bar pet for macOS. Minimalist black & white pixel art ae
 ## TODO / Future Work
 
 ### Animation
-- [ ] Current animations are **too vigorous** - tone them down
+- [x] Current animations are **too vigorous** - tone them down (done in v1.0.2)
 - Make movements subtle and gentle, not hyperactive
 - Should feel calm and ambient, not distracting
 
