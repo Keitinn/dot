@@ -275,6 +275,32 @@ fn ac_older_conflict_copy_does_not_double_and_moves_to_conflicts() {
 }
 
 #[test]
+fn a_newer_conflict_copy_is_merged_but_stays_until_its_owner_takes_it_in() {
+    let shared = TempDir::new();
+    let devices = shared.path().join(DEVICES_DIR);
+    write_own(shared.path(), &device_a_old()).unwrap();
+    let copy = devices.join(format!("{} 2.json", ID_A));
+    fs::write(&copy, serde_json::to_string(&device_a()).unwrap()).unwrap();
+
+    let mut cache = SyncCache::default();
+    let report = cache.read_folder(shared.path());
+
+    // Its data counts here, and it is left for the other Macs and for A
+    assert_eq!(json(&cache.merged()), json(&merge([&device_a_old(), &device_a()])));
+    assert!(report.moved_to_conflicts.is_empty());
+    assert_eq!(report.kept_conflicts, vec![copy.clone()]);
+    assert!(copy.exists());
+
+    // Once A has rewritten its file with everything, the copy adds nothing and moves
+    let mut taken_in = device_a_old();
+    taken_in.absorb(&device_a());
+    write_own(shared.path(), &taken_in).unwrap();
+    let report = cache.read_folder(shared.path());
+    assert_eq!(report.moved_to_conflicts.len(), 1);
+    assert!(!copy.exists());
+}
+
+#[test]
 fn ac_same_day_bond_counters_on_two_devices_gain_at_most_g_cap() {
     let mut a = DeviceSnapshot::new(ID_A);
     let mut b = DeviceSnapshot::new(ID_B);
@@ -541,11 +567,62 @@ fn bond_replay_running_every_day_matches_the_f1_example() {
         bond: 280,
         overdue_applied: 0,
         last_open_date: date(1),
+        start: false,
     });
     let merged = merge([&a]);
     for (d, expected) in [(2, 280), (3, 280), (4, 280), (5, 272), (6, 264)] {
         assert_eq!(merged.bond_on("pet-x", date(d)).unwrap().bond, expected, "Oct {}", d);
     }
+}
+
+#[test]
+fn a_later_start_on_another_device_does_not_reset_a_settled_bond() {
+    let pet = adult();
+    let mut companion = CompanionState::default();
+    companion.advance_day(&pet, date(10));
+    companion.bond = 60;
+    let a = DeviceSnapshot::from_legacy(ID_A, &pet, &GameStats::new(), Some(&companion));
+    // B is a new Mac that first sees the adult pet two days later
+    let mut b = DeviceSnapshot::new(ID_B);
+    b.record_bond_start(&pet.id, date(12));
+    b.record_bond_day(&pet.id, date(12), day(true, 1, 0));
+
+    let merged = merge([&a, &b]);
+
+    assert_eq!(merged.bond[&pet.id].base.unwrap().settled_on, date(10));
+    assert_eq!(merged.bond_on(&pet.id, date(13)).unwrap().bond, 60 + 13);
+    assert_eq!(json(&merge([&b, &a])), json(&merged));
+}
+
+#[test]
+fn of_two_starts_the_earlier_one_counts() {
+    let mut a = DeviceSnapshot::new(ID_A);
+    let mut b = DeviceSnapshot::new(ID_B);
+    a.record_bond_start("pet-x", date(12));
+    b.record_bond_start("pet-x", date(10));
+    b.record_bond_day("pet-x", date(10), day(true, 0, 0));
+
+    let merged = merge([&a, &b]);
+
+    assert_eq!(merged.bond["pet-x"].base.unwrap().settled_on, date(10));
+    assert_eq!(merged.bond_on("pet-x", date(11)).unwrap().bond, 10);
+}
+
+#[test]
+fn bond_replay_of_a_very_old_base_is_quick() {
+    let mut a = DeviceSnapshot::new(ID_A);
+    a.bond.entry("pet-x".to_string()).or_default().base = Some(BondBase {
+        settled_on: NaiveDate::from_ymd_opt(-200_000, 1, 1).unwrap(),
+        bond: 300,
+        overdue_applied: 0,
+        last_open_date: NaiveDate::from_ymd_opt(-200_000, 1, 1).unwrap(),
+        start: false,
+    });
+    let started = std::time::Instant::now();
+    let replay = merge([&a]).bond_on("pet-x", date(14)).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_millis(100), "{:?}", started.elapsed());
+    // 30 overdue days at most, and never below the tier reached
+    assert_eq!(replay.bond, 300);
 }
 
 #[test]

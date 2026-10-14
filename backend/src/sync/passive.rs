@@ -183,6 +183,20 @@ mod tests {
     }
 
     #[test]
+    fn unaligned_first_run_loses_at_most_one_slot() {
+        let start = K0 * 600 + 250;
+        let mut stats = GameStats::new();
+        let mut ledger = PassiveLedger::default();
+        let before = stats.last_passive_time;
+        stats.accrue_passive(start, true);
+        ledger.record_accrual(before, stats.last_passive_time, 0);
+        assert_eq!(ledger.first_slot, Some(K0 + 1));
+
+        assert_eq!(accrue_every_minute(&mut stats, &mut ledger, start, 120), 12);
+        assert!((11..=12).contains(&ledger.slot_count()), "{:?}", ledger);
+    }
+
+    #[test]
     fn a_long_gap_records_the_capped_slots_once() {
         let mut ledger = PassiveLedger::default();
         let now = (K0 + 1_000) * 600;

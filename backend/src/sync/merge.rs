@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::companion::bond::{self, DayCounters};
 use crate::pet::PetState;
 use super::passive;
-use super::snapshot::{BondBase, BondLedger, DeviceSnapshot};
+use super::snapshot::{join_base, BondBase, BondLedger, DeviceSnapshot};
 
 /// What all devices add up to.
 #[derive(Debug, Clone, Serialize)]
@@ -193,7 +193,7 @@ fn merge_bond(devices: &BTreeMap<String, DeviceSnapshot>, retired: &BTreeSet<Str
     let mut merged: BTreeMap<String, BondLedger> = BTreeMap::new();
     for (pet_id, ledger) in devices.values().flat_map(|d| &d.bond).filter(|(id, _)| !retired.contains(*id)) {
         let into = merged.entry(pet_id.clone()).or_default();
-        into.base = into.base.max(ledger.base);
+        into.base = join_base(into.base, ledger.base);
         for (&date, counters) in &ledger.days {
             let day = into.days.entry(date).or_default();
             day.g |= counters.g;
@@ -205,13 +205,15 @@ fn merge_bond(devices: &BTreeMap<String, DeviceSnapshot>, retired: &BTreeSet<Str
     merged
 }
 
-/// Replays F1 day by day from the ledger's base up to `today`. Settling every
-/// day gives the same Bond as settling once after a gap (F1's difference
-/// rule), so this matches a single device that kept the companion.
+/// Replays F1 from the ledger's base up to `today`, settling on each day that
+/// has counters and once more on `today`, the way a single device settles on
+/// the first update of a day after being closed. F1's difference rule makes
+/// this the same Bond as settling every day (apart from where a tier floor
+/// is crossed mid-gap), and it loops only over recorded days.
 pub fn replay_bond(ledger: &BondLedger, today: NaiveDate) -> Option<BondReplay> {
     let base = ledger.base.or_else(|| {
         let first = *ledger.days.keys().next()?;
-        Some(BondBase { settled_on: first, bond: 0, overdue_applied: 0, last_open_date: first })
+        Some(BondBase { settled_on: first, bond: 0, overdue_applied: 0, last_open_date: first, start: true })
     })?;
     let mut bond_value = base.bond;
     let mut overdue_applied = base.overdue_applied;
@@ -223,7 +225,10 @@ pub fn replay_bond(ledger: &BondLedger, today: NaiveDate) -> Option<BondReplay> 
             last_open = last_open.max(settled_on);
             overdue_applied = 0;
         }
-        let Some(next) = settled_on.succ_opt() else { break };
+        let next = settled_on
+            .succ_opt()
+            .and_then(|after| ledger.days.range(after..today).next().map(|(&day, _)| day))
+            .unwrap_or(today);
         let settled = bond::settle(bond_value, &counters, (next - last_open).num_days(), overdue_applied);
         bond_value = settled.bond;
         overdue_applied = settled.overdue_applied;

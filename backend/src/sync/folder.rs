@@ -33,6 +33,9 @@ pub struct ReadReport {
     pub skipped: Vec<PathBuf>,
     /// Conflict copies, merged and then moved to `conflicts/`.
     pub moved_to_conflicts: Vec<PathBuf>,
+    /// Conflict copies holding something the device's own file lacks. Merged,
+    /// but left in place for the other Macs until the owner takes them in.
+    pub kept_conflicts: Vec<PathBuf>,
 }
 
 /// Every device file read so far, joined per device. A file that cannot be
@@ -54,7 +57,9 @@ impl SyncCache {
     /// Reads every `devices/*.json` under `root` into the cache. A copy whose
     /// name is not `<its device_id>.json` (`<id> 2.json` from iCloud, a
     /// Dropbox conflicted copy) is merged like any other version of that
-    /// device, then moved to `conflicts/` so it is not read again.
+    /// device. It moves to `conflicts/` only once the device's own file holds
+    /// everything in it; until then moving it would hide its data from the
+    /// other Macs.
     pub fn read_folder(&mut self, root: &Path) -> ReadReport {
         let mut report = ReadReport::default();
         let dir = root.join(DEVICES_DIR);
@@ -83,11 +88,16 @@ impl SyncCache {
             };
             self.absorb(&snapshot);
             report.read += 1;
-            if path.file_stem().and_then(|s| s.to_str()) != Some(snapshot.device_id.as_str()) {
-                match move_to_conflicts(root, &path) {
-                    Ok(dest) => report.moved_to_conflicts.push(dest),
-                    Err(e) => eprintln!("Could not move {} to {}: {}", path.display(), CONFLICTS_DIR, e),
-                }
+            if path.file_stem().and_then(|s| s.to_str()) == Some(snapshot.device_id.as_str()) {
+                continue;
+            }
+            if !own_file_covers(&dir, &snapshot) {
+                report.kept_conflicts.push(path);
+                continue;
+            }
+            match move_to_conflicts(root, &path) {
+                Ok(dest) => report.moved_to_conflicts.push(dest),
+                Err(e) => eprintln!("Could not move {} to {}: {}", path.display(), CONFLICTS_DIR, e),
             }
         }
         report
@@ -111,6 +121,19 @@ fn read_snapshot(path: &Path) -> Result<DeviceSnapshot, String> {
         return Err("no device_id".to_string());
     }
     Ok(snapshot)
+}
+
+/// Whether `<devices>/<copy's device_id>.json` already holds all of `copy`:
+/// joining the copy into it changes nothing.
+fn own_file_covers(devices: &Path, copy: &DeviceSnapshot) -> bool {
+    let Ok(own) = read_snapshot(&devices.join(format!("{}.json", copy.device_id))) else {
+        return false;
+    };
+    let mut current = DeviceSnapshot::new(&copy.device_id);
+    current.absorb(&own);
+    let mut with_copy = current.clone();
+    with_copy.absorb(copy);
+    serde_json::to_value(&current).ok() == serde_json::to_value(&with_copy).ok()
 }
 
 fn move_to_conflicts(root: &Path, path: &Path) -> io::Result<PathBuf> {

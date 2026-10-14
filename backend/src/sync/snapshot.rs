@@ -4,7 +4,7 @@
 //! counts anything twice.
 
 use std::collections::{BTreeMap, BTreeSet};
-use chrono::{Days, NaiveDate};
+use chrono::{Datelike, Days, NaiveDate};
 use serde::{Deserialize, Serialize};
 use crate::companion::bond::DayCounters;
 use crate::companion::{CareKind, CompanionState, Onboarding};
@@ -88,13 +88,32 @@ pub struct BondLedger {
     pub onboarding_yes: bool,
 }
 
-/// Field order is the merge order: the latest settlement wins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BondBase {
     pub settled_on: NaiveDate,
     pub bond: u16,
     pub overdue_applied: u32,
     pub last_open_date: NaiveDate,
+    /// Only the first adult day seen on a device, at Bond 0; not a settlement.
+    #[serde(default)]
+    pub start: bool,
+}
+
+impl BondBase {
+    /// A settlement beats a start, the latest settlement wins, and of two
+    /// starts the earlier one: a Mac that joins later must not reset Bond.
+    fn rank(&self) -> (bool, i32, u16, u32, NaiveDate) {
+        let day = self.settled_on.num_days_from_ce();
+        (!self.start, if self.start { -day } else { day }, self.bond, self.overdue_applied, self.last_open_date)
+    }
+}
+
+/// The base to keep of two. Every field is in the rank, so it is a total order.
+pub(crate) fn join_base(a: Option<BondBase>, b: Option<BondBase>) -> Option<BondBase> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if b.rank() > a.rank() { b } else { a }),
+        (a, b) => a.or(b),
+    }
 }
 
 impl Default for DeviceSnapshot {
@@ -154,12 +173,14 @@ impl DeviceSnapshot {
         let Some(settled_on) = companion.last_settle_date else { return };
         let pet_id = companion.pet_id.clone().unwrap_or_else(|| pet.id.clone());
         let ledger = self.bond.entry(pet_id).or_default();
-        ledger.base = Some(BondBase {
+        let base = BondBase {
             settled_on,
             bond: companion.bond,
             overdue_applied: companion.overdue_applied,
             last_open_date: companion.last_open_date.unwrap_or(settled_on),
-        });
+            start: false,
+        };
+        ledger.base = join_base(ledger.base, Some(base));
         if companion.today != DayCounters::default() {
             ledger.days.insert(settled_on, companion.today);
         }
@@ -225,8 +246,8 @@ impl DeviceSnapshot {
     /// Where Bond for `pet_id` starts: the first adult day, at Bond 0.
     pub fn record_bond_start(&mut self, pet_id: &str, date: NaiveDate) {
         let ledger = self.bond.entry(pet_id.to_string()).or_default();
-        let start = BondBase { settled_on: date, bond: 0, overdue_applied: 0, last_open_date: date };
-        ledger.base = ledger.base.max(Some(start));
+        let start = BondBase { settled_on: date, bond: 0, overdue_applied: 0, last_open_date: date, start: true };
+        ledger.base = join_base(ledger.base, Some(start));
     }
 
     pub fn retire_pet(&mut self, pet_id: &str) {
@@ -257,7 +278,7 @@ impl DeviceSnapshot {
         self.streak.absorb(&other.streak);
         for (pet_id, theirs) in &other.bond {
             let ours = self.bond.entry(pet_id.clone()).or_default();
-            ours.base = ours.base.max(theirs.base);
+            ours.base = join_base(ours.base, theirs.base);
             for (&date, &counters) in &theirs.days {
                 let day = ours.days.entry(date).or_default();
                 *day = join_day(*day, counters);
