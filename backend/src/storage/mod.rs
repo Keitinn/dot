@@ -73,13 +73,11 @@ pub fn save_companion(companion: &CompanionState) -> Result<(), String> {
 
 /// A file of its own, so a broken companion save never touches the pet or the stats.
 pub fn save_companion_in(dir: &Path, companion: &CompanionState) -> Result<(), String> {
-    let _ = (dir, companion);
-    unimplemented!()
+    save_json(&dir.join(COMPANION_FILE), companion)
 }
 
 pub fn load_companion_from(dir: &Path) -> LoadOutcome<CompanionState> {
-    let _ = dir;
-    unimplemented!()
+    load_json(&dir.join(COMPANION_FILE))
 }
 
 fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {

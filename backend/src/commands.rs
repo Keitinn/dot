@@ -58,8 +58,21 @@ fn care(
     now: i64,
     today: NaiveDate,
 ) -> Result<(), String> {
-    let _ = (pet, companion, kind, now, today);
-    unimplemented!()
+    check_care(pet, kind, now)?;
+    // Bring the needs up to now first, so the need is read as it is just before the action
+    pet.update();
+    let need_before = kind.need(pet);
+    let (act, doing): (fn(&mut PetState), Activity) = match kind {
+        CareKind::Feed => (PetState::feed, Activity::Eating),
+        CareKind::Play => (PetState::play, Activity::Playing),
+        CareKind::Sleep => (PetState::sleep, Activity::Sleeping),
+    };
+    act(pet);
+    // A pet that died during the update ignores the action; record_care also skips a dead pet
+    if pet.activity == doing {
+        companion.record_care(pet, need_before, today);
+    }
+    Ok(())
 }
 
 /// Shared body of the FEED / PLAY / SLEEP commands.

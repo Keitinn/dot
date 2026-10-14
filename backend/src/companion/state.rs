@@ -80,8 +80,11 @@ pub enum CareKind {
 impl CareKind {
     /// The need this action fills.
     pub fn need(self, pet: &PetState) -> u8 {
-        let _ = pet;
-        unimplemented!()
+        match self {
+            CareKind::Feed => pet.hunger,
+            CareKind::Play => pet.happiness,
+            CareKind::Sleep => pet.energy,
+        }
     }
 }
 
@@ -119,36 +122,86 @@ impl CompanionState {
     /// is seen as an adult, then settles Bond once per new day. Does nothing
     /// unless the pet is a living adult.
     pub fn advance_day(&mut self, pet: &PetState, today: NaiveDate) {
-        let _ = (pet, today);
-        unimplemented!()
+        if !is_active(pet) {
+            return;
+        }
+        if self.pet_id.as_deref().is_some_and(|id| id != pet.id) {
+            self.reset_for_new_pet();
+        }
+        if self.last_settle_date.is_none() {
+            self.start(pet, today);
+        } else {
+            self.settle(today);
+        }
+    }
+
+    /// The first day as an adult. No Bond for the time before, and the grace
+    /// period counts from today.
+    fn start(&mut self, pet: &PetState, today: NaiveDate) {
+        self.pet_id = Some(pet.id.clone());
+        self.today = DayCounters::default();
+        self.last_settle_date = Some(today);
+        self.last_open_date = Some(today);
+        self.overdue_applied = 0;
     }
 
     /// Settles the counters into Bond if `today` is after the last settlement.
     /// Returns whether it did. A date at or before the last one does nothing.
     pub fn settle(&mut self, today: NaiveDate) -> bool {
-        let _ = today;
-        unimplemented!()
+        let Some(last_settle) = self.last_settle_date else {
+            return false;
+        };
+        if today <= last_settle {
+            return false;
+        }
+        let last_open = self.last_open_date.unwrap_or(last_settle);
+        let days_since_open = (today - last_open).num_days();
+        let settled = bond::settle(self.bond, &self.today, days_since_open, self.overdue_applied);
+        self.bond = settled.bond;
+        self.overdue_applied = settled.overdue_applied;
+        self.today = DayCounters::default();
+        self.last_settle_date = Some(today);
+        true
     }
 
     /// A manual open of the popover (tray click).
     pub fn record_open(&mut self, pet: &PetState, now: i64, today: NaiveDate) {
-        let _ = (pet, now, today);
-        unimplemented!()
+        self.advance_day(pet, today);
+        if !is_active(pet) {
+            return;
+        }
+        self.today.g = true;
+        self.last_open_at = Some(now);
+        // A clock set back must not make the last open look older than it was
+        self.last_open_date = Some(self.last_open_date.map_or(today, |d| d.max(today)));
+        self.overdue_applied = 0;
     }
 
     /// A successful FEED / PLAY / SLEEP. `need_before` is the need the action
     /// fills, read just before it; only low needs count, so spamming a full
     /// pet does not grow Bond.
     pub fn record_care(&mut self, pet: &PetState, need_before: u8, today: NaiveDate) {
-        let _ = (pet, need_before, today);
-        unimplemented!()
+        self.advance_day(pet, today);
+        if !is_active(pet) || need_before >= CARE_NEED_BELOW {
+            return;
+        }
+        // Counted past N_CARE_MAX too; the cap is applied when settling
+        self.today.n_care = self.today.n_care.saturating_add(1);
     }
 
     /// The pet was revived: the new pet starts with no Bond, no counters and
     /// no line history, and is asked again when it grows up. Settings stay.
     pub fn reset_for_new_pet(&mut self) {
-        unimplemented!()
+        *self = Self {
+            settings: self.settings.clone(),
+            ..Self::default()
+        };
     }
+}
+
+/// The companion runs only for a living adult (R1).
+fn is_active(pet: &PetState) -> bool {
+    pet.stage == EvolutionStage::Adult && pet.is_alive
 }
 
 #[cfg(test)]

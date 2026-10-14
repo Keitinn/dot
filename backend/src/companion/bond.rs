@@ -26,27 +26,33 @@ pub struct Settled {
 
 /// G: the day's gain, capped at G_CAP.
 pub fn daily_gain(day: &DayCounters) -> u32 {
-    let _ = day;
-    unimplemented!()
+    let greet = if day.g { G_GREET } else { 0 };
+    let care = G_CARE * day.n_care.min(N_CARE_MAX);
+    let focus = G_FOCUS * day.n_focus.min(N_FOCUS_MAX);
+    (greet + care + focus).min(G_CAP)
 }
 
 /// overdue(today) for `days_since_open` (m) days since the last manual open.
 pub fn overdue_days(days_since_open: i64) -> u32 {
-    let _ = days_since_open;
-    unimplemented!()
+    (days_since_open - GRACE).clamp(0, M_MAX as i64) as u32
 }
 
 /// The highest tier `bond` has reached, or 0.
 pub fn tier_floor(bond: u16) -> u16 {
-    let _ = bond;
-    unimplemented!()
+    BOND_TIERS.iter().copied().filter(|&tier| tier <= bond).max().unwrap_or(0)
 }
 
 /// B' for one settlement. Decay is the difference from what was already
 /// applied, so settling every day or once after a gap ends in the same B.
 pub fn settle(bond: u16, day: &DayCounters, days_since_open: i64, overdue_applied: u32) -> Settled {
-    let _ = (bond, day, days_since_open, overdue_applied);
-    unimplemented!()
+    let overdue = overdue_days(days_since_open);
+    let decay = DECAY * overdue.saturating_sub(overdue_applied);
+    let raw = bond as i64 + daily_gain(day) as i64 - decay as i64;
+    let floored = raw.max(tier_floor(bond) as i64);
+    Settled {
+        bond: floored.clamp(0, BOND_MAX as i64) as u16,
+        overdue_applied: overdue,
+    }
 }
 
 #[cfg(test)]
