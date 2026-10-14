@@ -618,7 +618,7 @@ mod tests {
         let mut pet = pet_left_at(5, 70, 50, 3);
         pet.update_at(T0 + 63 * HOUR, 0);
         assert!(pet.is_alive);
-        // First 30 minutes: hunger 5 - 6 -> 0, health 3 - floor(0.05 * 30) = 2. Then nothing drops
+        // First 30 minutes: hunger 5 - 6 -> 0, health 3 - 0.05 * 30 = 1.5, shown rounded as 2. Then nothing drops
         assert_eq!(pet.hunger, 0);
         assert_eq!(pet.health, 2);
         assert_eq!(pet.energy, 100);
