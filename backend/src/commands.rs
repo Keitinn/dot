@@ -62,14 +62,23 @@ fn care(
     // Bring the needs up to now first, so the need is read as it is just before the action
     pet.update();
     let need_before = kind.need(pet);
-    let (act, doing): (fn(&mut PetState), Activity) = match kind {
-        CareKind::Feed => (PetState::feed, Activity::Eating),
-        CareKind::Play => (PetState::play, Activity::Playing),
-        CareKind::Sleep => (PetState::sleep, Activity::Sleeping),
+    let (last_feed, last_play) = (pet.last_feed_time, pet.last_play_time);
+    // A pet that died during the update ignores the action, so check that it took effect
+    let went_through = match kind {
+        CareKind::Feed => {
+            pet.feed();
+            pet.last_feed_time != last_feed
+        }
+        CareKind::Play => {
+            pet.play();
+            pet.last_play_time != last_play
+        }
+        CareKind::Sleep => {
+            pet.sleep();
+            pet.activity == Activity::Sleeping
+        }
     };
-    act(pet);
-    // A pet that died during the update ignores the action; record_care also skips a dead pet
-    if pet.activity == doing {
+    if went_through {
         companion.record_care(pet, need_before, today);
     }
     Ok(())
@@ -369,6 +378,22 @@ mod tests {
         care(&mut pet, &mut companion, CareKind::Feed, now(), today()).unwrap();
 
         assert_eq!(pet.hunger, 40);
+        assert_eq!(companion.today.n_care, 0);
+    }
+
+    #[test]
+    fn care_for_a_pet_that_dies_in_the_update_does_not_count() {
+        let (mut pet, mut companion) = adult();
+        pet.hunger = 10;
+        pet.happiness = 10;
+        pet.activity = Activity::Eating;
+        pet.activity_until = Some(now() + 30);
+        // The update before the action finds health at 0 and the pet dies
+        pet.health = 0;
+
+        care(&mut pet, &mut companion, CareKind::Feed, now(), today()).unwrap();
+
+        assert!(!pet.is_alive);
         assert_eq!(companion.today.n_care, 0);
     }
 

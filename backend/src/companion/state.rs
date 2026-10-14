@@ -131,6 +131,8 @@ impl CompanionState {
         if self.last_settle_date.is_none() {
             self.start(pet, today);
         } else {
+            // A hand-edited save may lack the id; claim it for this pet
+            self.pet_id.get_or_insert_with(|| pet.id.clone());
             self.settle(today);
         }
     }
@@ -192,10 +194,8 @@ impl CompanionState {
     /// The pet was revived: the new pet starts with no Bond, no counters and
     /// no line history, and is asked again when it grows up. Settings stay.
     pub fn reset_for_new_pet(&mut self) {
-        *self = Self {
-            settings: self.settings.clone(),
-            ..Self::default()
-        };
+        let settings = std::mem::take(&mut self.settings);
+        *self = Self { settings, ..Self::default() };
     }
 }
 

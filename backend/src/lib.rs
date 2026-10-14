@@ -25,7 +25,7 @@ pub struct AppState {
     pub load_warning: Mutex<Option<String>>,
     /// Started mini games waiting for their result. Not saved.
     pub game_sessions: Mutex<GameSessions>,
-    /// Lock after `pet` (and after `stats` when both are held).
+    /// Lock after `pet`, and before `stats` when both are held.
     pub companion: Mutex<CompanionState>,
 }
 
