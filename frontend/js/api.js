@@ -37,6 +37,12 @@ export class PetAPI {
         return await invoke('start_game', { game });
     }
 
+    // One move of a game whose answer stays in Rust. input: { type: 'look' | 'guess' | ... }
+    // -> { finished, moves, reward, view: { game, ... } }
+    async gameStep(token, input) {
+        return await invoke('game_step', { token, input });
+    }
+
     async reportGameResult(token, game, outcome, moves = null) {
         return await invoke('report_game_result', { token, game, outcome, moves });
     }

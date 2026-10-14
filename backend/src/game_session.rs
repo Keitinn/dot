@@ -5,6 +5,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use rand::{rngs::StdRng, SeedableRng};
+
+use crate::minigames::{GameState, StepInput, StepResult};
 use crate::pet::{economy, GameStats};
 
 /// Oldest pending sessions are dropped beyond this many.
@@ -30,16 +33,30 @@ pub fn min_play_time(game: &str, moves: Option<u32>) -> Option<Duration> {
 struct PendingGame {
     game: String,
     started_at: Instant,
+    /// For a game played through `step`: its answer and progress
+    state: Option<GameState>,
 }
 
-#[derive(Default)]
 pub struct GameSessions {
     pending: HashMap<String, PendingGame>,
+    /// Deals the answers of the games played through `step`
+    rng: StdRng,
+}
+
+impl Default for GameSessions {
+    fn default() -> Self {
+        Self { pending: HashMap::new(), rng: StdRng::from_os_rng() }
+    }
 }
 
 impl GameSessions {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The same seed deals the same answers, so tests can replay a game.
+    pub fn with_seed(seed: u64) -> Self {
+        Self { pending: HashMap::new(), rng: StdRng::seed_from_u64(seed) }
     }
 
     pub fn pending_count(&self) -> usize {
@@ -66,15 +83,36 @@ impl GameSessions {
         }
 
         let token = uuid::Uuid::new_v4().to_string();
+        let state = GameState::new(game, &mut self.rng);
         self.pending.insert(
             token.clone(),
-            PendingGame { game: game.to_string(), started_at: now },
+            PendingGame { game: game.to_string(), started_at: now, state },
         );
         Ok(token)
     }
 
+    /// Plays one move of a game that keeps its answer here. The token stays
+    /// open until `finish`.
+    pub fn step(&mut self, token: &str, input: &StepInput, now: Instant) -> Result<StepResult, String> {
+        let session = self
+            .pending
+            .get_mut(token)
+            .ok_or_else(|| "unknown or used game token".to_string())?;
+        if now.saturating_duration_since(session.started_at) > SESSION_TTL {
+            self.pending.remove(token);
+            return Err("game token expired".to_string());
+        }
+        let state = session
+            .state
+            .as_mut()
+            .ok_or_else(|| format!("{} has no steps", session.game))?;
+        state.step(input)
+    }
+
     /// Consumes the token (whether or not the check passes) and checks the report against it.
-    pub fn finish(&mut self, token: &str, game: &str, moves: Option<u32>, now: Instant) -> Result<(), String> {
+    /// Returns the coins for a game that keeps its answer here, decided by its
+    /// state; `None` for a game whose reported outcome sets the coins.
+    pub fn finish(&mut self, token: &str, game: &str, moves: Option<u32>, now: Instant) -> Result<Option<u64>, String> {
         let session = self
             .pending
             .remove(token)
@@ -86,6 +124,14 @@ impl GameSessions {
         if session.game != game {
             return Err(format!("token was issued for {}, not {game}", session.game));
         }
+        // The reported moves are ignored here: the state counted them
+        let (moves, reward) = match &session.state {
+            Some(state) => {
+                let settled = state.settled().ok_or_else(|| format!("{game} is not over yet"))?;
+                (Some(settled.moves), Some(settled.reward))
+            }
+            None => (moves, None),
+        };
         if game == "memory" && moves.unwrap_or(0) < MEMORY_MIN_MOVES {
             return Err(format!("memory needs at least {MEMORY_MIN_MOVES} moves"));
         }
@@ -93,7 +139,7 @@ impl GameSessions {
         if played < min {
             return Err("game finished too quickly".to_string());
         }
-        Ok(())
+        Ok(reward)
     }
 }
 
@@ -105,6 +151,8 @@ pub struct GameReward {
 }
 
 /// Validates a finished game and pays its coins, up to the daily cap.
+/// For a game played through `GameSessions::step`, `outcome` and `moves` are
+/// ignored: its state decides the coins.
 /// `today` is the local date as `YYYY-MM-DD`.
 #[allow(clippy::too_many_arguments)]
 pub fn claim_reward(
@@ -117,8 +165,10 @@ pub fn claim_reward(
     now: Instant,
     today: &str,
 ) -> Result<GameReward, String> {
-    sessions.finish(token, game, moves, now)?;
-    let reward = economy::game_reward(game, outcome, moves)?;
+    let reward = match sessions.finish(token, game, moves, now)? {
+        Some(decided) => decided,
+        None => economy::game_reward(game, outcome, moves)?,
+    };
     let earned = stats.add_game_coins(reward, today, economy::DAILY_GAME_COIN_CAP);
     Ok(GameReward { earned, capped: earned < reward })
 }
@@ -126,6 +176,7 @@ pub fn claim_reward(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::minigames::StepInput;
     use crate::pet::economy::DAILY_GAME_COIN_CAP;
 
     const DAY: &str = "2026-10-14";
@@ -277,6 +328,28 @@ mod tests {
             assert!(r.is_err(), "memory with {moves:?} moves was accepted");
             assert_eq!(stats.coins, 0);
         }
+    }
+
+    #[test]
+    fn a_step_needs_a_live_token() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        for token in ["", "not-a-token"] {
+            assert!(sessions.step(token, &StepInput::Look, t0).is_err(), "token {token:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn games_the_ui_plays_on_its_own_have_no_steps() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = sessions.start("janken", t0).unwrap();
+
+        assert!(sessions.step(&token, &StepInput::Look, t0 + secs(1)).is_err());
+        // The token still pays as before
+        let mut stats = GameStats::new();
+        let r = claim(&mut sessions, &mut stats, &token, "janken", "win", None, t0 + secs(2)).unwrap();
+        assert_eq!(r.earned, 2);
     }
 
     #[test]

@@ -8,6 +8,7 @@ use crate::{AppState, game_session, pet::{PetState, GameStats, Achievement, achi
 use rand::{rngs::StdRng, SeedableRng};
 use crate::companion::{self, CareKind, CompanionState, OnboardingAnswer, OpenResult, SaidLine, SettingsUpdate, SettingsView};
 use crate::pet::state::{Activity, FEED_COOLDOWN_SECS, PLAY_COOLDOWN_SECS};
+use crate::minigames::{StepInput, StepResult};
 use crate::storage;
 use crate::sync::runtime::{FetchOutcome, READ_TIMEOUT};
 use crate::sync::{SyncRuntime, SyncSettingsView, SyncStatusView};
@@ -411,6 +412,18 @@ pub struct RewardResult {
 pub fn start_game(state: State<AppState>, game: String) -> Result<String, String> {
     let mut sessions = state.game_sessions.lock().map_err(|e| e.to_string())?;
     sessions.start(&game, Instant::now())
+}
+
+/// One move of a game that keeps its answer in Rust (HIT & BLOW, HIGH & LOW,
+/// DOT SAYS, WHERE'S DOT?). The result shows only what the move reveals.
+#[tauri::command]
+pub fn game_step(state: State<AppState>, token: String, input: StepInput) -> Result<StepResult, String> {
+    game_step_at(&state, &token, &input, Instant::now())
+}
+
+pub(crate) fn game_step_at(state: &AppState, token: &str, input: &StepInput, now: Instant) -> Result<StepResult, String> {
+    let mut sessions = state.game_sessions.lock().map_err(|e| e.to_string())?;
+    sessions.step(token, input, now)
 }
 
 /// Called by the UI when a mini game ends. Games never cost coins.

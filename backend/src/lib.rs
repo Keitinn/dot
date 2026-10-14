@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod companion;
 pub mod game_session;
+pub mod minigames;
 pub mod pet;
 pub mod signals;
 pub mod storage;
