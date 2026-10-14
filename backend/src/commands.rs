@@ -171,6 +171,13 @@ pub fn get_achievements(state: State<AppState>) -> Result<Vec<Achievement>, Stri
     Ok(achievements::get_all_achievements(&stats))
 }
 
+/// What happened to a broken save at startup ("SAVE RECOVERED" / "SAVE BACKED UP").
+/// Returned once, then cleared.
+#[tauri::command]
+pub fn get_load_warning(state: State<AppState>) -> Option<String> {
+    state.take_load_warning()
+}
+
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
