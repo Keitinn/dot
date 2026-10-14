@@ -20,8 +20,8 @@ pub enum LoadOutcome<T> {
     Loaded(T),
     /// The save was missing or broken; restored from the `.bak` copy.
     Recovered(T),
-    /// The save was broken and no usable backup exists. The broken file was
-    /// moved aside as `<name>.corrupt-<unix secs>.json`; start fresh.
+    /// The save or its backup was broken and nothing usable is left. Broken
+    /// files were moved aside as `<stem>.corrupt-<unix secs>.json`; start fresh.
     Reset,
 }
 
@@ -67,12 +67,18 @@ pub fn load_stats_from(dir: &Path) -> LoadOutcome<GameStats> {
 
 fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    if path.exists() {
-        // The backup is only a fallback for a damaged save, so it skips fsync.
-        replace_file(&hidden_sibling(path, "bak.tmp"), &backup_path(path), |tmp| {
-            fs::copy(path, tmp).map(|_| ())
-        })
-        .map_err(|e| format!("could not back up {}: {}", path.display(), e))?;
+    match fs::read(path) {
+        // Unchanged: skip the fsync and keep the older backup.
+        Ok(current) if current == json.as_bytes() => return Ok(()),
+        Ok(_) => {
+            // The backup is only a fallback for a damaged save, so it skips fsync.
+            replace_file(&hidden_sibling(path, "bak.tmp"), &backup_path(path), |tmp| {
+                fs::copy(path, tmp).map(|_| ())
+            })
+            .map_err(|e| format!("could not back up {}: {}", path.display(), e))?;
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("could not read {} before saving: {}", path.display(), e)),
     }
     replace_file(&hidden_sibling(path, "tmp"), path, |tmp| {
         let mut file = File::create(tmp)?;
@@ -97,19 +103,27 @@ fn replace_file(
 }
 
 fn load_json<T: DeserializeOwned>(path: &Path) -> LoadOutcome<T> {
-    match read_json(path) {
-        Ok(Some(value)) => LoadOutcome::Loaded(value),
-        Ok(None) => match read_backup(path) {
-            Some(value) => LoadOutcome::Recovered(value),
-            None => LoadOutcome::Missing,
-        },
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    let main_broken = match read_json(path) {
+        Ok(Some(value)) => return LoadOutcome::Loaded(value),
+        Ok(None) => false,
         Err(e) => {
             eprintln!("Could not load {}: {}", path.display(), e);
-            move_aside(path);
-            match read_backup(path) {
-                Some(value) => LoadOutcome::Recovered(value),
-                None => LoadOutcome::Reset,
-            }
+            move_aside(path, &stem);
+            true
+        }
+    };
+
+    let bak = backup_path(path);
+    match read_json(&bak) {
+        Ok(Some(value)) => LoadOutcome::Recovered(value),
+        Ok(None) if main_broken => LoadOutcome::Reset,
+        Ok(None) => LoadOutcome::Missing,
+        Err(e) => {
+            // Keep it too: the next two saves would otherwise rotate over it.
+            eprintln!("Backup {} is unusable: {}", bak.display(), e);
+            move_aside(&bak, &format!("{}.bak", stem));
+            LoadOutcome::Reset
         }
     }
 }
@@ -123,21 +137,10 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
     serde_json::from_str(&json).map(Some).map_err(|e| e.to_string())
 }
 
-fn read_backup<T: DeserializeOwned>(path: &Path) -> Option<T> {
-    let bak = backup_path(path);
-    match read_json(&bak) {
-        Ok(value) => value,
-        Err(e) => {
-            eprintln!("Backup {} is unusable: {}", bak.display(), e);
-            None
-        }
-    }
-}
-
-/// Renames a broken save to `<stem>.corrupt-<unix secs>.json` so the next save
+/// Renames a broken file to `<stem>.corrupt-<unix secs>.json` so the next save
 /// cannot overwrite it. Falls back to copying if the rename fails.
-fn move_aside(path: &Path) {
-    let dest = corrupt_path(path, Utc::now().timestamp());
+fn move_aside(path: &Path, stem: &str) {
+    let dest = corrupt_path(path, stem, Utc::now().timestamp());
     let moved = fs::rename(path, &dest).or_else(|e| {
         eprintln!("Could not move {} aside ({}); copying instead", path.display(), e);
         fs::copy(path, &dest).map(|_| ())
@@ -148,8 +151,7 @@ fn move_aside(path: &Path) {
     }
 }
 
-fn corrupt_path(path: &Path, timestamp: i64) -> PathBuf {
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+fn corrupt_path(path: &Path, stem: &str, timestamp: i64) -> PathBuf {
     let candidate = |suffix: String| {
         path.with_file_name(format!("{}.corrupt-{}{}.json", stem, timestamp, suffix))
     };
@@ -383,6 +385,52 @@ mod tests {
     }
 
     #[test]
+    fn broken_bak_is_moved_aside_too() {
+        let dir = TempDir::new();
+        fs::write(dir.path().join(STATE_FILE), BROKEN_JSON).unwrap();
+        fs::write(dir.path().join("pet-state.json.bak"), "also broken").unwrap();
+
+        assert!(matches!(load_state_from(dir.path()), LoadOutcome::Reset));
+
+        assert!(!dir.path().join("pet-state.json.bak").exists());
+        let corrupt = dir.corrupt_files("pet-state.bak");
+        assert_eq!(corrupt.len(), 1, "files: {:?}", dir.file_names());
+        assert_eq!(fs::read_to_string(&corrupt[0]).unwrap(), "also broken");
+    }
+
+    #[test]
+    fn missing_state_with_broken_bak_resets_and_keeps_the_bak() {
+        let dir = TempDir::new();
+        fs::write(dir.path().join("pet-state.json.bak"), "also broken").unwrap();
+
+        assert!(matches!(load_state_from(dir.path()), LoadOutcome::Reset));
+        assert_eq!(dir.corrupt_files("pet-state.bak").len(), 1);
+    }
+
+    #[test]
+    fn identical_save_is_skipped() {
+        let dir = TempDir::new();
+        save_stats_in(dir.path(), &stats_with_coins(3)).unwrap();
+        save_stats_in(dir.path(), &stats_with_coins(3)).unwrap();
+
+        // An unchanged save neither rewrites the file nor rotates the backup.
+        assert_eq!(dir.file_names(), vec!["game-stats.json"]);
+    }
+
+    #[test]
+    fn corrupt_path_never_reuses_a_name() {
+        let dir = TempDir::new();
+        let path = dir.path().join(STATE_FILE);
+        let first = corrupt_path(&path, "pet-state", 1_700_000_000);
+        fs::write(&first, "taken").unwrap();
+
+        let second = corrupt_path(&path, "pet-state", 1_700_000_000);
+
+        assert_eq!(first.file_name().unwrap(), "pet-state.corrupt-1700000000.json");
+        assert_eq!(second.file_name().unwrap(), "pet-state.corrupt-1700000000-1.json");
+    }
+
+    #[test]
     fn missing_state_with_good_bak_is_recovered_from_bak() {
         let dir = TempDir::new();
         save_state_in(dir.path(), &named_pet("kept")).unwrap();
@@ -417,6 +465,7 @@ mod tests {
         assert!(save_state_in(dir.path(), &named_pet("doomed")).is_err());
 
         assert_eq!(fs::read_to_string(dir.path().join(STATE_FILE)).unwrap(), before);
+        assert!(!dir.path().join(".pet-state.json.bak.tmp").exists());
         match load_state_from(dir.path()) {
             LoadOutcome::Loaded(pet) => assert_eq!(pet.name, "safe"),
             other => panic!("expected Loaded, got {:?}", other),

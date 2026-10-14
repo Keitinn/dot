@@ -244,10 +244,11 @@ class DotApp {
         }
         if (!warning) return;
 
+        const show = () => this.showToast(warning, 6000);
         if (document.hasFocus()) {
-            this.showToast(warning);
+            show();
         } else {
-            window.addEventListener('focus', () => this.showToast(warning), { once: true });
+            window.addEventListener('focus', show, { once: true });
         }
     }
 
@@ -255,7 +256,7 @@ class DotApp {
         this.showToast(`UNLOCKED: ${name}`);
     }
 
-    showToast(message) {
+    showToast(message, durationMs = 2500) {
         const toast = document.getElementById('achievement-toast');
         const text = document.getElementById('toast-text');
         text.textContent = message;
@@ -264,7 +265,7 @@ class DotApp {
         if (this.toastTimeout) clearTimeout(this.toastTimeout);
         this.toastTimeout = setTimeout(() => {
             toast.classList.add('hidden');
-        }, 2500);
+        }, durationMs);
     }
 
     async toggleAchievements() {

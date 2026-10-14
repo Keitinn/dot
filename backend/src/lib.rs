@@ -131,6 +131,7 @@ mod tests {
         let mut stats = GameStats::new();
         stats.coins = 55;
         storage::save_stats_in(&dir.0, &stats).unwrap();
+        stats.coins = 60;
         storage::save_stats_in(&dir.0, &stats).unwrap();
         fs::write(dir.0.join(storage::STATS_FILE), "{ broken").unwrap();
 
@@ -143,8 +144,9 @@ mod tests {
     #[test]
     fn reset_outranks_recovery_in_the_warning() {
         let dir = TempDir::new();
-        let pet = PetState::new();
+        let mut pet = PetState::new();
         storage::save_state_in(&dir.0, &pet).unwrap();
+        pet.name = "renamed".to_string();
         storage::save_state_in(&dir.0, &pet).unwrap();
         fs::write(dir.0.join(storage::STATE_FILE), "{ broken").unwrap();
         fs::write(dir.0.join(storage::STATS_FILE), "{ broken").unwrap();
