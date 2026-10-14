@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.1.0
+
+### Added
+- Mini games: janken, memory, and blackjack. Playing never costs coins; wins pay out coins
+- Coins: earned from mini games, passively (1 coin every 10 minutes while the pet is alive), and as a daily care streak bonus (1 coin per streak day, up to 10). Coins carry over when the pet is revived
+- Snack shop: buy candy, cookie, cake, coffee, or medicine with coins. Snacks are independent of the FEED button and its cooldown
+
 ## v1.0.0
 
 ### Added
