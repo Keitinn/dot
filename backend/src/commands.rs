@@ -734,6 +734,30 @@ mod tests {
     }
 
     #[test]
+    fn ticks_through_a_long_idle_match_one_update_over_the_same_span() {
+        let app = app_at_t0();
+        let mut once = app.pet.lock().unwrap().clone();
+        let span = 3 * 3600;
+
+        // The user stops typing at T0; each tick reads how long it has been
+        let mut now = T0;
+        while now < T0 + span {
+            now += SIGNAL_TICK_SECS as i64;
+            let at = Moment { now, idle_secs: (now - T0) as u64, today: today() };
+            tick(&app, at, None).unwrap();
+        }
+        // The first 30 minutes present, the rest deep sleep, as F5 splits one long gap
+        once.update_at(T0 + span, span as u64);
+
+        let pet = app.pet.lock().unwrap();
+        assert_eq!(
+            [pet.hunger, pet.happiness, pet.energy, pet.health],
+            [once.hunger, once.happiness, once.energy, once.health]
+        );
+        assert!(pet.is_alive);
+    }
+
+    #[test]
     fn ticks_for_a_dead_pet_change_nothing_and_pay_nothing() {
         let app = app_at_t0();
         app.pet.lock().unwrap().is_alive = false;

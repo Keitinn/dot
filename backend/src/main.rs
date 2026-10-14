@@ -5,6 +5,7 @@ use tauri::{
     Manager,
     tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
 };
+use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 use dot::{AppState, commands};
 
@@ -23,10 +24,15 @@ fn main() {
                 .name("dot-tick".into())
                 .spawn(move || loop {
                     std::thread::sleep(Duration::from_secs(commands::SIGNAL_TICK_SECS));
-                    let state = handle.state::<AppState>();
-                    let at = commands::Moment::current();
-                    if let Err(e) = commands::tick(&state, at, commands::save_dir().as_deref()) {
-                        eprintln!("Tick failed: {}", e);
+                    // A panic is logged and the next tick still runs, rather than ending the thread silently
+                    let ticked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        let state = handle.state::<AppState>();
+                        commands::tick(&state, commands::Moment::current(), commands::save_dir().as_deref())
+                    }));
+                    match ticked {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => eprintln!("Tick failed: {}", e),
+                        Err(_) => eprintln!("Tick panicked"),
                     }
                 })?;
 
