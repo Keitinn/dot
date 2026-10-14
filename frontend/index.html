@@ -16,12 +16,27 @@
             <button id="settings-btn">*</button>
             <div id="settings-menu" class="hidden">
                 <div id="version-label">v1.1.0</div>
+                <button id="companion-menu-btn" aria-expanded="false" aria-controls="companion-settings">COMPANION</button>
+                <div id="companion-settings" class="hidden" role="group" aria-labelledby="companion-menu-btn">
+                    <button id="companion-master-btn" aria-pressed="true">ON</button>
+                    <div class="companion-row">
+                        <span>QUIET</span>
+                        <input id="quiet-start" type="number" min="0" max="23" step="1" inputmode="numeric" aria-label="Quiet hours start (0-23)">
+                        <span aria-hidden="true">-</span>
+                        <input id="quiet-end" type="number" min="0" max="23" step="1" inputmode="numeric" aria-label="Quiet hours end (0-23)">
+                    </div>
+                    <button id="quiet-1h-btn">QUIET 1H</button>
+                    <button id="quiet-today-btn">QUIET TODAY</button>
+                    <button id="quiet-off-btn">QUIET OFF</button>
+                    <div id="companion-quiet-note" aria-live="polite"></div>
+                </div>
                 <button id="reset-btn">RESET</button>
                 <button id="quit-btn">QUIT</button>
             </div>
         </div>
         <div id="pet-container">
             <canvas id="pet-canvas" width="128" height="128"></canvas>
+            <div id="companion-bubble" role="status" aria-live="polite"></div>
         </div>
 
         <div id="stats-container">

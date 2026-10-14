@@ -1,4 +1,7 @@
 import { SPRITES } from './sprites.js';
+import { eyeGrid, shouldBlink } from './companion-logic.js';
+
+const BLINK_MS = 160;
 
 export class PetRenderer {
     constructor(canvasId) {
@@ -14,6 +17,11 @@ export class PetRenderer {
         this.animTime = 0; // Continuous animation time
 
         this.running = false;
+
+        // Companion face on the adult (see setFace)
+        this.face = null;
+        this.blinkUntil = 0;
+        this.stillAdult = false;
 
         // Load sprite images (placeholder for now)
         this.sprites = {};
@@ -241,9 +249,10 @@ export class PetRenderer {
     drawAdult(x, y) {
         const pixelSize = 4;
 
-        // Adult has gentle breathing/swaying motion - calm and mature
-        const breathe = Math.sin(this.animTime * 1.0) * 1.5;
-        const sway = Math.sin(this.animTime * 0.5) * 1;
+        // Adult has gentle breathing/swaying motion - calm and mature.
+        // Held still for the companion when motion is reduced.
+        const breathe = this.stillAdult ? 0 : Math.sin(this.animTime * 1.0) * 1.5;
+        const sway = this.stillAdult ? 0 : Math.sin(this.animTime * 0.5) * 1;
 
         this.ctx.save();
         this.ctx.translate(x + sway, y + breathe);
@@ -273,6 +282,14 @@ export class PetRenderer {
             );
         });
 
+        if (this.face) {
+            const shape = performance.now() < this.blinkUntil ? 'blink' : this.face;
+            this.drawAdultEye(-10, -10, shape);
+            this.drawAdultEye(6, -10, shape);
+            this.ctx.restore();
+            return;
+        }
+
         // Eyes
         this.ctx.fillStyle = '#c8d4c0';
         this.ctx.fillRect(-10, -10, pixelSize * 1.5, pixelSize * 1.5);
@@ -283,5 +300,30 @@ export class PetRenderer {
         this.ctx.fillRect(8, -8, pixelSize, pixelSize);
 
         this.ctx.restore();
+    }
+
+    // Only the 6x6 eye is redrawn; the body around it stays as it is.
+    drawAdultEye(x, y, shape) {
+        const cell = 2;
+        this.ctx.fillStyle = '#000';
+        this.ctx.fillRect(x, y, cell * 3, cell * 3);
+        this.ctx.fillStyle = '#c8d4c0';
+        eyeGrid(shape).forEach((row, cy) => {
+            row.forEach((open, cx) => {
+                if (open) this.ctx.fillRect(x + cx * cell, y + cy * cell, cell, cell);
+            });
+        });
+    }
+
+    /**
+     * The companion mood to show on the adult, or null for the usual eyes.
+     * A new face blinks once unless motion is reduced.
+     */
+    setFace(mood, { reducedMotion = false } = {}) {
+        if (shouldBlink(this.face, mood, reducedMotion)) {
+            this.blinkUntil = performance.now() + BLINK_MS;
+        }
+        this.face = mood;
+        this.stillAdult = mood !== null && reducedMotion;
     }
 }

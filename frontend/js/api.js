@@ -49,6 +49,31 @@ export class PetAPI {
         return await invoke('get_load_warning');
     }
 
+    // { enabled, mood, line: { id, text } | null, onboarding: 'prompt' | 'none' }
+    async companionOpen() {
+        return await invoke('companion_open');
+    }
+
+    // { enabled, mood }
+    async refreshCompanionMood() {
+        return await invoke('refresh_companion_mood');
+    }
+
+    // { master_on, quiet_start, quiet_end, quiet_until }
+    async getCompanionSettings() {
+        return await invoke('get_companion_settings');
+    }
+
+    // update: { master_on?, quiet_start?, quiet_end?, quiet?: 'quiet_1h' | 'quiet_today' | 'off' }
+    async setCompanionSettings(update) {
+        return await invoke('set_companion_settings', { update });
+    }
+
+    // answer: 'yes' | 'later'
+    async companionOnboardingAnswer(answer) {
+        return await invoke('companion_onboarding_answer', { answer });
+    }
+
     async quitApp() {
         return await invoke('quit_app');
     }
