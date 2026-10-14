@@ -718,37 +718,51 @@ body {
     text-align: center;
 }
 
-/* Companion: settings in the * menu */
-#companion-settings {
+/* Companion and sync: settings in the * menu */
+#companion-settings,
+#sync-settings {
     background: #f4f4f4;
     border-bottom: 1px solid #ccc;
 }
 
-#companion-settings.hidden {
+#companion-settings.hidden,
+#sync-settings.hidden {
     display: none;
 }
 
-#companion-menu-btn[aria-expanded="true"] {
+#companion-menu-btn[aria-expanded="true"],
+#sync-menu-btn[aria-expanded="true"] {
     background: #000;
     color: #fff;
 }
 
-#settings-menu #companion-settings button {
+#settings-menu #companion-settings button,
+#settings-menu #sync-settings button {
     padding-left: 18px;
     text-align: left;
     background: #f4f4f4;
 }
 
-#settings-menu #companion-settings button:hover {
+#settings-menu #companion-settings button:hover,
+#settings-menu #sync-settings button:hover {
     background: #000;
     color: #fff;
 }
 
-#companion-master-btn::before {
+#settings-menu #sync-settings button:disabled,
+#settings-menu #sync-settings button:disabled:hover {
+    background: #f4f4f4;
+    color: #999;
+    cursor: default;
+}
+
+#companion-master-btn::before,
+#sync-enabled-btn::before {
     content: '[ ] ';
 }
 
-#companion-master-btn[aria-pressed="true"]::before {
+#companion-master-btn[aria-pressed="true"]::before,
+#sync-enabled-btn[aria-pressed="true"]::before {
     content: '[X] ';
 }
 
@@ -792,6 +806,71 @@ body {
 
 #companion-quiet-note:empty {
     display: none;
+}
+
+/* Sync: the folder path and the SET button share a row */
+.companion-row.sync-path-row input {
+    width: 110px;
+    text-align: left;
+}
+
+#settings-menu #sync-settings .sync-path-row button {
+    display: inline-block;
+    width: auto;
+    padding: 1px 4px;
+    border: 1px solid #000;
+}
+
+#sync-status {
+    padding: 4px 12px 4px 18px;
+    font-size: 8px;
+    font-weight: 700;
+    line-height: 11px;
+}
+
+#sync-status:empty {
+    display: none;
+}
+
+/* Sync: WHICH DOT? under the pet, like the companion bubble but staying until answered */
+#sync-choice {
+    position: absolute;
+    bottom: 4px;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 11;
+}
+
+#sync-choice[hidden] {
+    display: none;
+}
+
+.sync-choice-bubble {
+    padding: 2px 5px 3px;
+    background: #fff;
+    color: #000;
+    border: 1px solid #000;
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 11px;
+    text-align: center;
+    pointer-events: auto;
+}
+
+.sync-choice-answers {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    margin-top: 2px;
+}
+
+.sync-choice-later {
+    border-style: dotted;
 }
 
 /* Companion: the bubble over the top of the canvas, above the eyes */
