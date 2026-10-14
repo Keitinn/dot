@@ -22,6 +22,16 @@ body {
     border: 2px solid #000;
 }
 
+/* A strip along the top to move the window by. The buttons sit above it (z-index 50) */
+#drag-region {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 28px;
+    z-index: 40;
+}
+
 /* Settings */
 #settings-container {
     position: absolute;

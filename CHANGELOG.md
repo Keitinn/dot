@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Dock にアイコンが出ないようにした(起動時に activation policy を Accessory に設定)
+- ポップオーバーの上部の帯をドラッグしてウィンドウを動かせるようにした(`start-dragging` のみ許可)
+
 ## v1.2.0
 
 ### Added
