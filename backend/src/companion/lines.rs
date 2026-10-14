@@ -2,7 +2,7 @@
 //! The text lives in `lines.json`; this module only picks one, or none.
 
 use std::sync::OnceLock;
-use rand::Rng;
+use rand::{seq::IndexedRandom, Rng};
 use serde::Deserialize;
 use super::consts::*;
 use super::mood::{Mood, Need};
@@ -62,8 +62,12 @@ pub enum Part {
 
 impl Part {
     pub fn of_hour(hour: u32) -> Part {
-        let _ = hour;
-        todo!()
+        match hour {
+            5..=10 => Part::Morning,
+            11..=16 => Part::Day,
+            17..=21 => Part::Evening,
+            _ => Part::Night,
+        }
     }
 }
 
@@ -129,8 +133,59 @@ pub fn select<'a, R: Rng + ?Sized>(
     speak_p: f64,
     rng: &mut R,
 ) -> Option<&'a Line> {
-    let _ = (lines, ctx, history, speak_p, rng);
-    todo!()
+    for category in Category::PRIORITY {
+        if !applies(category, ctx) || !cooled_down(category, ctx, history) {
+            continue;
+        }
+        let pool = candidates(lines, category, ctx, history);
+        if pool.is_empty() {
+            continue;
+        }
+        if is_optional(category) && !rng.random_bool(speak_p.clamp(0.0, 1.0)) {
+            return None;
+        }
+        return pool.choose(rng).copied();
+    }
+    None
+}
+
+/// The R3 condition of `category`.
+fn applies(category: Category, ctx: &LineContext) -> bool {
+    let away_at_least = |hours: i64| ctx.secs_since_open.is_some_and(|secs| secs >= hours * 3600);
+    match category {
+        Category::GreetFirstToday => ctx.first_today,
+        Category::MoodConcerned => ctx.mood == Mood::Concerned && ctx.concerned_need.is_some(),
+        Category::MissedYou => away_at_least(MISSED_YOU_H),
+        Category::ReturnAfterAway => away_at_least(AWAY_RETURN_H),
+        Category::BondTier => ctx.tier_unsaid && ctx.tier > 0,
+        Category::TimeOfDay => true,
+        Category::Mood => ctx.mood != Mood::Concerned,
+    }
+}
+
+/// `time_of_day` and `mood` speak only sometimes.
+fn is_optional(category: Category) -> bool {
+    matches!(category, Category::TimeOfDay | Category::Mood)
+}
+
+/// Each category once in LINE_CATEGORY_COOLDOWN_H, except the greeting
+/// (once a day by its condition) and `concerned`, which waits
+/// CONCERNED_VALVE_H per need instead.
+fn cooled_down(category: Category, ctx: &LineContext, history: &LineHistory) -> bool {
+    match category {
+        Category::GreetFirstToday => true,
+        Category::MoodConcerned => {
+            let need = ctx.concerned_need.map_or("", |n| n.as_str());
+            waited(history.concerned_last_at.get(need), ctx.now, CONCERNED_VALVE_H)
+        }
+        _ => waited(history.category_last_at.get(category.as_str()), ctx.now, LINE_CATEGORY_COOLDOWN_H),
+    }
+}
+
+/// `hours` have passed since `last`. A `last` in the future (the clock was
+/// set back) counts as passed, so a category is never silenced for good.
+fn waited(last: Option<&i64>, now: i64, hours: i64) -> bool {
+    last.is_none_or(|&last| last > now || now - last >= hours * 3600)
 }
 
 /// The lines of `category` that fit `ctx` and were not said recently.
@@ -140,14 +195,33 @@ pub fn candidates<'a>(
     ctx: &LineContext,
     history: &LineHistory,
 ) -> Vec<&'a Line> {
-    let _ = (lines, category, ctx, history);
-    todo!()
+    let part = Part::of_hour(ctx.hour);
+    lines
+        .iter()
+        .filter(|l| l.category == category)
+        .filter(|l| match category {
+            // Each tier has its own lines
+            Category::BondTier => l.min_tier == ctx.tier,
+            _ => l.min_tier <= ctx.tier,
+        })
+        .filter(|l| l.part.is_none_or(|p| p == part))
+        .filter(|l| l.need.is_none_or(|n| Some(n) == ctx.concerned_need))
+        .filter(|l| l.mood.is_none_or(|m| m == ctx.mood))
+        .filter(|l| !history.recent_ids.contains(&l.id))
+        .collect()
 }
 
 /// Records that `line` was said at `ctx.now`.
 pub fn remember(history: &mut LineHistory, line: &Line, ctx: &LineContext) {
-    let _ = (history, line, ctx);
-    todo!()
+    history.recent_ids.push(line.id.clone());
+    let excess = history.recent_ids.len().saturating_sub(LINE_HISTORY);
+    history.recent_ids.drain(..excess);
+    history.category_last_at.insert(line.category.as_str().to_string(), ctx.now);
+    if line.category == Category::MoodConcerned {
+        if let Some(need) = ctx.concerned_need {
+            history.concerned_last_at.insert(need.as_str().to_string(), ctx.now);
+        }
+    }
 }
 
 #[cfg(test)]

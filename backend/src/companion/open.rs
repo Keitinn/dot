@@ -52,8 +52,48 @@ pub fn open_with<R: Rng + ?Sized>(
     speak_p: f64,
     rng: &mut R,
 ) -> OpenResult {
-    let _ = (state, pet, now, local, lines, speak_p, rng);
-    todo!()
+    if !is_active(pet) {
+        return OpenResult { enabled: false, mood: Mood::Calm, line: None, prompt: false };
+    }
+    let today = local.date();
+    let hour = local.hour();
+    // Read before record_open overwrites them. advance_day first, so a new day
+    // has already reset the day counters.
+    state.advance_day(pet, today);
+    let first_today = !state.today.g;
+    let secs_since_open = state.last_open_at.map(|at| (now - at).max(0));
+    state.record_open(pet, now, today);
+
+    let input = MoodInput::from_pet(pet, hour, secs_since_open);
+    let shown = mood::decide(&input, state.mood.as_ref(), now, Trigger::Open);
+    state.mood = Some(shown);
+
+    let muted = state.settings.is_muted(now);
+    // The prompt takes the bubble, so no line with it
+    let prompt = !muted && settings::onboarding_at_open(&mut state.onboarding, now);
+    if muted || prompt {
+        return OpenResult { enabled: true, mood: shown.mood, line: None, prompt };
+    }
+
+    let tier = bond::tier_floor(state.bond);
+    let ctx = LineContext {
+        now,
+        hour,
+        mood: shown.mood,
+        concerned_need: (shown.mood == Mood::Concerned).then(|| mood::concerned_need(&input)).flatten(),
+        first_today,
+        secs_since_open,
+        tier,
+        tier_unsaid: tier > state.bond_tier_said,
+    };
+    let line = lines::select(lines, &ctx, &state.lines, speak_p, rng).map(|line| {
+        lines::remember(&mut state.lines, line, &ctx);
+        if line.category == Category::BondTier {
+            state.bond_tier_said = tier;
+        }
+        SaidLine { id: line.id.clone(), text: line.text.clone() }
+    });
+    OpenResult { enabled: true, mood: shown.mood, line, prompt: false }
 }
 
 #[cfg(test)]

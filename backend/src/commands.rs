@@ -3,7 +3,8 @@ use serde::Serialize;
 use std::time::Instant;
 use chrono::{Local, NaiveDate, Utc};
 use crate::{AppState, game_session, pet::{PetState, GameStats, Achievement, achievements, economy}};
-use crate::companion::{CareKind, CompanionState};
+use rand::{rngs::StdRng, SeedableRng};
+use crate::companion::{self, CareKind, CompanionState, OnboardingAnswer, OpenResult, SaidLine, SettingsUpdate, SettingsView};
 use crate::pet::state::{Activity, FEED_COOLDOWN_SECS, PLAY_COOLDOWN_SECS};
 use crate::storage;
 
@@ -277,10 +278,111 @@ pub fn buy_snack(state: State<AppState>, snack_id: String) -> Result<ActionResul
     Ok(ActionResult::from(&pet, new_achievements))
 }
 
+/// What the popover shows when it opens. Bond is never part of it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct CompanionOpenResult {
+    /// The pet is a living adult; otherwise ignore the rest.
+    pub enabled: bool,
+    pub mood: String,
+    pub line: Option<SaidLine>,
+    /// "prompt" to ask `STAY WITH YOU?`, otherwise "none".
+    pub onboarding: String,
+}
+
+impl From<OpenResult> for CompanionOpenResult {
+    fn from(result: OpenResult) -> Self {
+        Self {
+            enabled: result.enabled,
+            mood: result.mood.as_str().to_string(),
+            line: result.line,
+            onboarding: if result.prompt { "prompt" } else { "none" }.to_string(),
+        }
+    }
+}
+
+/// Called once each time the popover opens (the window gains focus).
+#[tauri::command]
+pub fn companion_open(state: State<AppState>) -> Result<CompanionOpenResult, String> {
+    let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
+    pet.update();
+    save_pet(&pet);
+
+    let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
+    let local = Local::now();
+    let seed = local.timestamp_nanos_opt().unwrap_or_else(|| local.timestamp()) as u64;
+    let result = companion::open(
+        &mut companion,
+        &pet,
+        local.timestamp(),
+        local.naive_local(),
+        &mut StdRng::seed_from_u64(seed),
+    );
+    if result.enabled {
+        save_companion(&companion);
+    }
+    Ok(result.into())
+}
+
+#[tauri::command]
+pub fn get_companion_settings(state: State<AppState>) -> Result<SettingsView, String> {
+    let companion = state.companion.lock().map_err(|e| e.to_string())?;
+    Ok(companion.settings.view(Utc::now().timestamp()))
+}
+
+/// Changes only the fields given; refuses the whole change if any is invalid.
+#[tauri::command]
+pub fn set_companion_settings(state: State<AppState>, update: SettingsUpdate) -> Result<SettingsView, String> {
+    let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
+    let local = Local::now();
+    companion::settings::apply(&mut companion.settings, &update, local.timestamp(), local.naive_local())?;
+    save_companion(&companion);
+    Ok(companion.settings.view(local.timestamp()))
+}
+
+/// `answer` is "yes" or "later".
+#[tauri::command]
+pub fn companion_onboarding_answer(state: State<AppState>, answer: String) -> Result<(), String> {
+    let answer = OnboardingAnswer::parse(&answer)?;
+    let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
+    companion::settings::answer_onboarding(&mut companion.onboarding, answer, Utc::now().timestamp());
+    save_companion(&companion);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::pet::EvolutionStage;
+
+    #[test]
+    fn open_result_reads_as_the_ui_expects() {
+        let result = OpenResult {
+            enabled: true,
+            mood: companion::Mood::MissedYou,
+            line: Some(SaidLine { id: "missed_1".to_string(), text: "WELCOME BACK.".to_string() }),
+            prompt: false,
+        };
+
+        let json = serde_json::to_value(CompanionOpenResult::from(result)).unwrap();
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "enabled": true,
+                "mood": "missed_you",
+                "line": { "id": "missed_1", "text": "WELCOME BACK." },
+                "onboarding": "none",
+            })
+        );
+    }
+
+    #[test]
+    fn a_prompt_reads_as_prompt() {
+        let result = OpenResult { enabled: true, mood: companion::Mood::Calm, line: None, prompt: true };
+        let ui = CompanionOpenResult::from(result);
+        assert_eq!(ui.onboarding, "prompt");
+        assert_eq!(ui.line, None);
+    }
 
     fn today() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, 14).unwrap()

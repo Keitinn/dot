@@ -41,21 +41,51 @@ pub struct SettingsView {
 impl Settings {
     /// Master OFF, or QUIET 1H / QUIET TODAY still running: no lines.
     pub fn is_muted(&self, now: i64) -> bool {
-        let _ = now;
-        todo!()
+        !self.master_on || self.active_quiet_until(now).is_some()
     }
 
     pub fn view(&self, now: i64) -> SettingsView {
-        let _ = now;
-        todo!()
+        SettingsView {
+            master_on: self.master_on,
+            quiet_start: self.quiet_start,
+            quiet_end: self.quiet_end,
+            quiet_until: self.active_quiet_until(now),
+        }
+    }
+
+    fn active_quiet_until(&self, now: i64) -> Option<i64> {
+        self.quiet_until.filter(|&until| now < until)
     }
 }
 
 /// Applies `update`, or nothing at all when any part of it is invalid.
 /// `local` is the local time matching `now`, for QUIET TODAY.
 pub fn apply(settings: &mut Settings, update: &SettingsUpdate, now: i64, local: NaiveDateTime) -> Result<(), String> {
-    let _ = (settings, update, now, local);
-    todo!()
+    for hour in [update.quiet_start, update.quiet_end].into_iter().flatten() {
+        if hour > 23 {
+            return Err(format!("quiet hour must be 0-23, got {}", hour));
+        }
+    }
+    if let Some(on) = update.master_on {
+        settings.master_on = on;
+    }
+    if let Some(start) = update.quiet_start {
+        settings.quiet_start = start;
+    }
+    if let Some(end) = update.quiet_end {
+        settings.quiet_end = end;
+    }
+    if let Some(quiet) = update.quiet {
+        settings.quiet_until = match quiet {
+            QuietAction::Quiet1h => Some(now + QUIET_1H_SECS),
+            QuietAction::QuietToday => {
+                let to_midnight = 24 * 3600 - local.num_seconds_from_midnight() as i64;
+                Some(now + to_midnight)
+            }
+            QuietAction::Off => None,
+        };
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,23 +96,41 @@ pub enum OnboardingAnswer {
 
 impl OnboardingAnswer {
     pub fn parse(answer: &str) -> Result<Self, String> {
-        let _ = answer;
-        todo!()
+        match answer {
+            "yes" => Ok(OnboardingAnswer::Yes),
+            "later" => Ok(OnboardingAnswer::Later),
+            other => Err(format!("unknown answer: {}", other)),
+        }
     }
 }
 
 /// YES or LATER on `STAY WITH YOU?`. LATER after the first prompt keeps the
 /// one re-prompt LATER_REPROMPT_D days on; LATER after that one ends it.
 pub fn answer_onboarding(onboarding: &mut Onboarding, answer: OnboardingAnswer, now: i64) {
-    let _ = (onboarding, answer, now);
-    todo!()
+    *onboarding = match (answer, &*onboarding) {
+        (OnboardingAnswer::Yes, _) => Onboarding::Yes,
+        (OnboardingAnswer::Later, Onboarding::Unseen) => Onboarding::Later { until: now + LATER_SECS },
+        (OnboardingAnswer::Later, Onboarding::Later { until }) => Onboarding::Later { until: *until },
+        // After the re-prompt, or a stray answer once settled: nothing more to ask
+        (OnboardingAnswer::Later, settled @ (Onboarding::Yes | Onboarding::Done)) => settled.clone(),
+    };
 }
 
 /// Called on each open: whether to show `STAY WITH YOU?` now. Showing it
 /// counts as LATER until answered, so ignoring it is the same as LATER.
 pub fn onboarding_at_open(onboarding: &mut Onboarding, now: i64) -> bool {
-    let _ = (onboarding, now);
-    todo!()
+    match *onboarding {
+        Onboarding::Unseen => {
+            *onboarding = Onboarding::Later { until: now + LATER_SECS };
+            true
+        }
+        Onboarding::Later { until } if now >= until => {
+            // The one re-prompt; after it only the settings can turn it on
+            *onboarding = Onboarding::Done;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Seconds the reprompt waits.

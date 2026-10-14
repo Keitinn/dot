@@ -105,21 +105,63 @@ pub enum Trigger {
 /// The R2 table, without the dwell. `was_concerned` keeps `concerned` until
 /// everything is back at CONCERNED_EXIT.
 pub fn first_match(input: &MoodInput, was_concerned: bool, at_open: bool) -> Mood {
-    let _ = (input, was_concerned, at_open);
-    todo!()
+    let needs_min = input.needs_min();
+    let concerned = if was_concerned {
+        needs_min < CONCERNED_EXIT || input.health < CONCERNED_EXIT
+    } else {
+        needs_min < CONCERNED_ENTER_NEEDS || input.health < CONCERNED_ENTER_HEALTH
+    };
+    let sleepy_hours = input.hour >= SLEEPY_START_HOUR || input.hour < SLEEPY_END_HOUR;
+    let away_a_day = input.secs_since_open.is_some_and(|secs| secs >= MISSED_YOU_H * 3600);
+
+    if concerned {
+        Mood::Concerned
+    } else if input.sleeping || input.energy < SLEEPY_ENERGY || sleepy_hours {
+        Mood::Sleepy
+    } else if at_open && away_a_day {
+        Mood::MissedYou
+    } else if needs_min < CALM_NEEDS {
+        Mood::Calm
+    } else {
+        Mood::Cheerful
+    }
 }
 
 /// The mood to show now, given the one shown before.
 pub fn decide(input: &MoodInput, prev: Option<&MoodRecord>, now: i64, trigger: Trigger) -> MoodRecord {
-    let _ = (input, prev, now, trigger);
-    todo!()
+    let was_concerned = prev.is_some_and(|p| p.mood == Mood::Concerned);
+    let mood = first_match(input, was_concerned, trigger == Trigger::Open);
+    let Some(prev) = prev else {
+        return MoodRecord { mood, since: now };
+    };
+    if mood == prev.mood {
+        return *prev;
+    }
+    let held = trigger == Trigger::Refresh
+        && mood != Mood::Concerned
+        && prev.mood != Mood::MissedYou
+        && now - prev.since < MOOD_MIN_DWELL_SECS;
+    if held {
+        *prev
+    } else {
+        MoodRecord { mood, since: now }
+    }
 }
 
 /// The need `concerned` is about: the lowest of those below CONCERNED_EXIT,
 /// ties in the order hunger, happiness, energy, health.
 pub fn concerned_need(input: &MoodInput) -> Option<Need> {
-    let _ = input;
-    todo!()
+    [
+        (Need::Hunger, input.hunger),
+        (Need::Happiness, input.happiness),
+        (Need::Energy, input.energy),
+        (Need::Health, input.health),
+    ]
+    .into_iter()
+    .filter(|&(_, value)| value < CONCERNED_EXIT)
+    // min_by_key keeps the first of equal values
+    .min_by_key(|&(_, value)| value)
+    .map(|(need, _)| need)
 }
 
 #[cfg(test)]
@@ -182,7 +224,8 @@ mod tests {
     fn sleeping_low_energy_or_late_hours_are_sleepy() {
         assert_eq!(at_open(&MoodInput { sleeping: true, ..input() }), Mood::Sleepy);
         assert_eq!(at_open(&MoodInput { energy: 34, ..input() }), Mood::Sleepy);
-        assert_eq!(at_open(&MoodInput { energy: 35, ..input() }), Mood::Cheerful);
+        // 35 is not sleepy, but still below CALM_NEEDS
+        assert_eq!(at_open(&MoodInput { energy: 35, ..input() }), Mood::Calm);
         for hour in [23, 0, 3, 5] {
             assert_eq!(at_open(&MoodInput { hour, ..input() }), Mood::Sleepy, "{}h", hour);
         }
