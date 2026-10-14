@@ -58,6 +58,7 @@ class DotApp {
         // Load initial state
         await this.updatePetState();
         await this.fetchStats();
+        await this.showLoadWarning();
 
         // Start render loop
         this.renderer.start((deltaTime) => {
@@ -232,16 +233,39 @@ class DotApp {
         }
     }
 
+    // The window starts hidden, so wait until the user first opens it.
+    async showLoadWarning() {
+        let warning;
+        try {
+            warning = await this.api.getLoadWarning();
+        } catch (error) {
+            console.error('Failed to get load warning:', error);
+            return;
+        }
+        if (!warning) return;
+
+        const show = () => this.showToast(warning, 6000);
+        if (document.hasFocus()) {
+            show();
+        } else {
+            window.addEventListener('focus', show, { once: true });
+        }
+    }
+
     showAchievementToast(name) {
+        this.showToast(`UNLOCKED: ${name}`);
+    }
+
+    showToast(message, durationMs = 2500) {
         const toast = document.getElementById('achievement-toast');
         const text = document.getElementById('toast-text');
-        text.textContent = `UNLOCKED: ${name}`;
+        text.textContent = message;
         toast.classList.remove('hidden');
 
         if (this.toastTimeout) clearTimeout(this.toastTimeout);
         this.toastTimeout = setTimeout(() => {
             toast.classList.add('hidden');
-        }, 2500);
+        }, durationMs);
     }
 
     async toggleAchievements() {
