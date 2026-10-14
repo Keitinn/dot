@@ -67,15 +67,19 @@ impl PetState {
     }
 
     pub fn update(&mut self) {
+        self.update_at(Utc::now().timestamp());
+    }
+
+    fn update_at(&mut self, now: i64) {
         if !self.is_alive {
             return;
         }
 
-        let now = Utc::now().timestamp();
-        let elapsed = (now - self.last_update) as u64;
+        // A clock moved backwards counts as no time passing
+        let elapsed = (now - self.last_update).max(0) as u64;
 
-        // Update age
-        self.age += elapsed;
+        // Update age (keeps growing while away, up to a cap per gap)
+        self.age += elapsed.min(super::needs::AGE_OFFLINE_CAP_SECS);
 
         // Check if current activity has ended
         if let Some(until) = self.activity_until {
@@ -85,14 +89,17 @@ impl PetState {
             }
         }
 
-        // Update needs based on elapsed time
-        super::needs::apply_decay(self, elapsed);
+        // Update needs: the present part first, then the away part as deep sleep
+        let split = super::needs::split_elapsed(elapsed);
+        super::needs::apply_decay(self, split.present_secs);
 
         // Check evolution
         super::evolution::check_evolution(self);
 
-        // Check death conditions
+        // Check death conditions. Deep sleep cannot kill, so only the present part is checked
         super::lifecycle::check_death(self);
+
+        super::needs::apply_deep_sleep(self, split.away_secs);
 
         self.last_update = now;
     }
@@ -500,5 +507,130 @@ mod tests {
         let mut pet = PetState::new();
         pet.activity = Activity::Playing;
         assert_eq!(pet.status(), "playing");
+    }
+
+    // Absence as deep sleep (design/gdd/companion.md F5 and the P6 verification table)
+    const T0: i64 = 1_700_000_000;
+    const HOUR: i64 = 3600;
+    const DAY: i64 = 24 * HOUR;
+    const ABSENCES: [i64; 3] = [63 * HOUR, 9 * DAY, 30 * DAY];
+
+    fn pet_left_at(hunger: u8, happiness: u8, energy: u8, health: u8) -> PetState {
+        let mut pet = PetState::new();
+        pet.hunger = hunger;
+        pet.happiness = happiness;
+        pet.energy = energy;
+        pet.health = health;
+        pet.last_update = T0;
+        pet
+    }
+
+    fn stats(pet: &PetState) -> [u8; 4] {
+        [pet.hunger, pet.happiness, pet.energy, pet.health]
+    }
+
+    /// The design table is computed in f64; the integer present rules may differ by up to 1
+    fn assert_stats_near(pet: &PetState, expected: [f64; 4]) {
+        let actual = stats(pet).map(f64::from);
+        for (a, e) in actual.iter().zip(expected) {
+            assert!((a - e).abs() <= 1.0, "expected {:?}, got {:?}", expected, actual);
+        }
+    }
+
+    #[test]
+    fn test_absence_from_full_stats_survives() {
+        for gap in ABSENCES {
+            let mut pet = pet_left_at(100, 100, 100, 100);
+            pet.update_at(T0 + gap);
+            assert!(pet.is_alive, "died after {}s", gap);
+            assert_stats_near(&pet, [30.0, 95.5, 100.0, 100.0]);
+        }
+    }
+
+    #[test]
+    fn test_absence_from_typical_friday_stats_survives() {
+        for gap in ABSENCES {
+            let mut pet = pet_left_at(70, 70, 50, 100);
+            pet.update_at(T0 + gap);
+            assert!(pet.is_alive, "died after {}s", gap);
+            assert_stats_near(&pet, [30.0, 65.5, 100.0, 100.0]);
+        }
+    }
+
+    #[test]
+    fn test_short_gap_uses_present_rules_only() {
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        pet.update_at(T0 + 600);
+        assert_eq!(stats(&pet), [98, 99, 99, 100]);
+    }
+
+    #[test]
+    fn test_clock_moved_backwards_changes_nothing() {
+        let mut pet = pet_left_at(70, 70, 50, 100);
+        pet.age = 1234;
+        pet.update_at(T0 - HOUR);
+        assert_eq!(stats(&pet), [70, 70, 50, 100]);
+        assert_eq!(pet.age, 1234);
+        assert_eq!(pet.last_update, T0 - HOUR);
+        assert!(pet.is_alive);
+    }
+
+    #[test]
+    fn test_needs_gap_clamped_to_offline_cap() {
+        let mut at_cap = pet_left_at(70, 70, 50, 40);
+        at_cap.update_at(T0 + 96 * HOUR);
+        let mut beyond_cap = pet_left_at(70, 70, 50, 40);
+        beyond_cap.update_at(T0 + 200 * HOUR);
+        assert_eq!(stats(&beyond_cap), stats(&at_cap));
+        // age is not limited by the needs cap
+        assert_eq!(beyond_cap.age, (200 * HOUR) as u64);
+    }
+
+    #[test]
+    fn test_age_grows_during_absence_up_to_cap() {
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        pet.update_at(T0 + 9 * DAY);
+        assert_eq!(pet.age, (9 * DAY) as u64);
+
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        pet.update_at(T0 + 30 * DAY);
+        assert_eq!(pet.age, (14 * DAY) as u64);
+    }
+
+    #[test]
+    fn test_near_death_pet_survives_if_first_30_minutes_do_not_kill() {
+        let mut pet = pet_left_at(5, 70, 50, 3);
+        pet.update_at(T0 + 63 * HOUR);
+        assert!(pet.is_alive);
+        // First 30 minutes: hunger 5 - 6 -> 0, health 3 - floor(0.05 * 30) = 2. Then nothing drops
+        assert_eq!(pet.hunger, 0);
+        assert_eq!(pet.health, 2);
+        assert_eq!(pet.energy, 100);
+    }
+
+    #[test]
+    fn test_near_death_pet_dies_within_first_30_minutes() {
+        let mut pet = pet_left_at(5, 70, 50, 1);
+        pet.update_at(T0 + 63 * HOUR);
+        assert!(!pet.is_alive);
+    }
+
+    #[test]
+    fn test_absence_keeps_idle_so_feed_is_accepted() {
+        let mut pet = pet_left_at(70, 70, 50, 100);
+        pet.update_at(T0 + 63 * HOUR);
+        assert_eq!(pet.activity, Activity::Idle);
+        assert!(pet.activity_until.is_none());
+    }
+
+    #[test]
+    fn test_sleep_that_ended_during_absence_wakes_up() {
+        let mut pet = pet_left_at(70, 70, 50, 100);
+        pet.activity = Activity::Sleeping;
+        pet.activity_until = Some(T0 + 2 * HOUR);
+        pet.update_at(T0 + 63 * HOUR);
+        assert_eq!(pet.activity, Activity::Idle);
+        assert!(pet.activity_until.is_none());
+        assert!(pet.is_alive);
     }
 }

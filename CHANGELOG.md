@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- 不在時間(アプリ非起動・スリープ)で死なないようにした
+
 ## v1.1.0
 
 ### Added

@@ -9,6 +9,43 @@ const ENERGY_DECAY_RATE: f64 = 0.1;     // was 0.2
 const SLEEP_HUNGER_DECAY_MULT: f64 = 0.5;  // hunger decays at half rate
 const SLEEP_ENERGY_RECOVERY_RATE: f64 = 0.5; // +0.5 energy per minute
 
+const HEALTH_RECOVERY_RATE: f64 = 0.3; // +0.3 health per minute
+
+// Absence ("deep sleep"). See design/gdd/companion.md F5 (Issue #16).
+/// A gap longer than this counts as absence: only its first AWAY_THRESHOLD_SECS use the present rules.
+pub const AWAY_THRESHOLD_SECS: u64 = 30 * 60;
+/// Max elapsed time applied to needs per update. Must stay above the F5 convergence time
+/// (AWAY_THRESHOLD + (100 - AWAY_HUNGER_FLOOR) / away hunger rate), so the cap never changes the result.
+pub const OFFLINE_CAP_SECS: u64 = 96 * 3600;
+/// Max elapsed time added to age per update.
+pub const AGE_OFFLINE_CAP_SECS: u64 = 14 * 24 * 3600;
+/// Hunger stops falling here while away. If it is already lower when the absence starts, it stays put.
+const AWAY_HUNGER_FLOOR: f64 = 30.0;
+/// Stage multiplier for away hunger decay. 1.0 for every stage until the Companion MVP adds Adult 0.2 (R5).
+const AWAY_STAGE_DECAY_MULT: f64 = 1.0;
+
+/// Time since the last update, split into the present part (normal rules) and the away part (deep sleep).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ElapsedSplit {
+    pub present_secs: u64,
+    pub away_secs: u64,
+}
+
+/// Splits a gap with no updates (app not running, Mac asleep, lid closed) per F5.
+/// Absence detected from input idle time (P6-b) is meant to be combined here by taking the larger away part.
+pub fn split_elapsed(elapsed_seconds: u64) -> ElapsedSplit {
+    let delta = elapsed_seconds.min(OFFLINE_CAP_SECS);
+    if delta > AWAY_THRESHOLD_SECS {
+        ElapsedSplit { present_secs: AWAY_THRESHOLD_SECS, away_secs: delta - AWAY_THRESHOLD_SECS }
+    } else {
+        ElapsedSplit { present_secs: delta, away_secs: 0 }
+    }
+}
+
+fn allows_health_recovery(hunger: f64, happiness: f64, energy: f64) -> bool {
+    hunger > 50.0 && happiness > 50.0 && energy > 30.0
+}
+
 pub fn apply_decay(pet: &mut PetState, elapsed_seconds: u64) {
     if !pet.is_alive {
         return;
@@ -41,11 +78,49 @@ pub fn apply_decay(pet: &mut PetState, elapsed_seconds: u64) {
     if pet.hunger < 10 || pet.happiness < 10 || pet.energy < 5 {
         let health_decay = (0.05 * minutes) as u8; // slower health decay
         pet.health = pet.health.saturating_sub(health_decay);
-    } else if pet.hunger > 50 && pet.happiness > 50 && pet.energy > 30 {
+    } else if allows_health_recovery(f64::from(pet.hunger), f64::from(pet.happiness), f64::from(pet.energy)) {
         // Recover health more easily
-        let health_recovery = (0.3 * minutes) as u8; // faster recovery
+        let health_recovery = (HEALTH_RECOVERY_RATE * minutes) as u8; // faster recovery
         pet.health = (pet.health + health_recovery).min(100);
     }
+}
+
+/// Deep sleep for the away part of a gap (F5): the sleep rules, plus a hunger floor and no health loss.
+/// Steps minute by minute in f64 so slow rates are not truncated away, then rounds back to u8.
+/// Never kills the pet and never changes `activity`, so FEED is not refused as "sleeping" on return.
+pub fn apply_deep_sleep(pet: &mut PetState, away_seconds: u64) {
+    if !pet.is_alive || away_seconds == 0 {
+        return;
+    }
+
+    let hunger_rate = HUNGER_DECAY_RATE * SLEEP_HUNGER_DECAY_MULT * AWAY_STAGE_DECAY_MULT;
+    let hunger_floor = AWAY_HUNGER_FLOOR.min(f64::from(pet.hunger));
+    let happiness = f64::from(pet.happiness); // no decay while sleeping
+    let mut hunger = f64::from(pet.hunger);
+    let mut energy = f64::from(pet.energy);
+    let mut health = f64::from(pet.health);
+
+    let whole_minutes = away_seconds / 60;
+    let last_partial_minute = (away_seconds % 60) as f64 / 60.0;
+    let steps = (0..whole_minutes)
+        .map(|_| 1.0)
+        .chain((last_partial_minute > 0.0).then_some(last_partial_minute));
+
+    for minutes in steps {
+        // The floor is at most 30, so hunger there rules out recovery and nothing changes from here on
+        if hunger <= hunger_floor && energy >= 100.0 {
+            break;
+        }
+        hunger = (hunger - hunger_rate * minutes).max(hunger_floor);
+        energy = (energy + SLEEP_ENERGY_RECOVERY_RATE * minutes).min(100.0);
+        if allows_health_recovery(hunger, happiness, energy) {
+            health = (health + HEALTH_RECOVERY_RATE * minutes).min(100.0);
+        }
+    }
+
+    pet.hunger = hunger.round() as u8;
+    pet.energy = energy.round() as u8;
+    pet.health = health.round() as u8;
 }
 
 #[cfg(test)]
@@ -191,5 +266,97 @@ mod tests {
         pet.happiness = 80;
         apply_decay(&mut pet, 3600); // 60 minutes
         assert_eq!(pet.happiness, 80); // unchanged
+    }
+
+    const HOUR: u64 = 3600;
+
+    #[test]
+    fn test_split_short_gap_is_all_present() {
+        assert_eq!(split_elapsed(600), ElapsedSplit { present_secs: 600, away_secs: 0 });
+        // Exactly the threshold is not yet absence
+        assert_eq!(split_elapsed(AWAY_THRESHOLD_SECS), ElapsedSplit { present_secs: AWAY_THRESHOLD_SECS, away_secs: 0 });
+    }
+
+    #[test]
+    fn test_split_long_gap_keeps_threshold_present() {
+        assert_eq!(
+            split_elapsed(63 * HOUR),
+            ElapsedSplit { present_secs: AWAY_THRESHOLD_SECS, away_secs: 63 * HOUR - AWAY_THRESHOLD_SECS }
+        );
+    }
+
+    #[test]
+    fn test_split_clamps_to_offline_cap() {
+        assert_eq!(split_elapsed(200 * HOUR), split_elapsed(OFFLINE_CAP_SECS));
+        assert_eq!(split_elapsed(200 * HOUR).away_secs, 96 * HOUR - AWAY_THRESHOLD_SECS);
+    }
+
+    #[test]
+    fn test_deep_sleep_hunger_stops_at_floor() {
+        let mut pet = new_pet();
+        apply_deep_sleep(&mut pet, 24 * HOUR);
+        assert_eq!(pet.hunger, 30);
+    }
+
+    #[test]
+    fn test_deep_sleep_hunger_decays_at_sleep_rate() {
+        let mut pet = new_pet();
+        apply_deep_sleep(&mut pet, HOUR);
+        // 0.2 * 0.5 * 60 = 6, the same as the existing sleep rule
+        assert_eq!(pet.hunger, 94);
+    }
+
+    #[test]
+    fn test_deep_sleep_hunger_below_floor_stays() {
+        let mut pet = new_pet();
+        pet.hunger = 12;
+        apply_deep_sleep(&mut pet, 24 * HOUR);
+        assert_eq!(pet.hunger, 12);
+    }
+
+    #[test]
+    fn test_deep_sleep_keeps_happiness_and_recovers_energy() {
+        let mut pet = new_pet();
+        pet.happiness = 40;
+        pet.energy = 10;
+        apply_deep_sleep(&mut pet, 24 * HOUR);
+        assert_eq!(pet.happiness, 40);
+        assert_eq!(pet.energy, 100);
+    }
+
+    #[test]
+    fn test_deep_sleep_never_reduces_health() {
+        let mut pet = new_pet();
+        pet.hunger = 0;
+        pet.happiness = 0;
+        pet.energy = 0;
+        pet.health = 1;
+        apply_deep_sleep(&mut pet, 96 * HOUR);
+        assert_eq!(pet.health, 1);
+        assert!(pet.is_alive);
+    }
+
+    #[test]
+    fn test_deep_sleep_recovers_health_while_needs_are_good() {
+        let mut pet = new_pet();
+        pet.health = 50;
+        apply_deep_sleep(&mut pet, 24 * HOUR);
+        // hunger stays above 50 for 500 minutes, far longer than the ~167 minutes needed to reach 100
+        assert_eq!(pet.health, 100);
+    }
+
+    #[test]
+    fn test_deep_sleep_does_not_touch_activity() {
+        let mut pet = new_pet();
+        apply_deep_sleep(&mut pet, 24 * HOUR);
+        assert_eq!(pet.activity, Activity::Idle);
+    }
+
+    #[test]
+    fn test_deep_sleep_noop_when_dead() {
+        let mut pet = new_pet();
+        pet.is_alive = false;
+        apply_deep_sleep(&mut pet, 24 * HOUR);
+        assert_eq!(pet.hunger, 100);
     }
 }
