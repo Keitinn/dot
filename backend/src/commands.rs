@@ -1,7 +1,7 @@
 use tauri::{AppHandle, State};
 use serde::Serialize;
 use std::time::Instant;
-use chrono::{Local, NaiveDate, Utc};
+use chrono::{Local, NaiveDate, Timelike, Utc};
 use crate::{AppState, game_session, pet::{PetState, GameStats, Achievement, achievements, economy}};
 use rand::{rngs::StdRng, SeedableRng};
 use crate::companion::{self, CareKind, CompanionState, OnboardingAnswer, OpenResult, SaidLine, SettingsUpdate, SettingsView};
@@ -324,6 +324,38 @@ pub fn companion_open(state: State<AppState>) -> Result<CompanionOpenResult, Str
     Ok(result.into())
 }
 
+/// The mood while the popover stays open. `enabled` as in `CompanionOpenResult`.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct CompanionMoodResult {
+    pub enabled: bool,
+    pub mood: String,
+}
+
+impl From<Option<companion::Mood>> for CompanionMoodResult {
+    fn from(mood: Option<companion::Mood>) -> Self {
+        Self {
+            enabled: mood.is_some(),
+            mood: mood.unwrap_or(companion::Mood::Calm).as_str().to_string(),
+        }
+    }
+}
+
+/// Called with the regular poll while the popover is open. Not an open: no
+/// visit is counted and no line is said.
+#[tauri::command]
+pub fn refresh_companion_mood(state: State<AppState>) -> Result<CompanionMoodResult, String> {
+    // The poll has just updated the pet
+    let pet = state.pet.lock().map_err(|e| e.to_string())?;
+    let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
+    let local = Local::now();
+    let before = companion.mood;
+    let mood = companion::open::refresh(&mut companion, &pet, local.timestamp(), local.hour());
+    if companion.mood != before {
+        save_companion(&companion);
+    }
+    Ok(mood.into())
+}
+
 #[tauri::command]
 pub fn get_companion_settings(state: State<AppState>) -> Result<SettingsView, String> {
     let companion = state.companion.lock().map_err(|e| e.to_string())?;
@@ -375,6 +407,14 @@ mod tests {
                 "onboarding": "none",
             })
         );
+    }
+
+    #[test]
+    fn mood_result_reads_as_the_ui_expects() {
+        let json = serde_json::to_value(CompanionMoodResult::from(Some(companion::Mood::Sleepy))).unwrap();
+        assert_eq!(json, serde_json::json!({ "enabled": true, "mood": "sleepy" }));
+        let off = CompanionMoodResult::from(None);
+        assert!(!off.enabled);
     }
 
     #[test]

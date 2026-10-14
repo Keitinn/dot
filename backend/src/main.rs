@@ -76,6 +76,7 @@ fn main() {
             commands::buy_snack,
             commands::get_load_warning,
             commands::companion_open,
+            commands::refresh_companion_mood,
             commands::get_companion_settings,
             commands::set_companion_settings,
             commands::companion_onboarding_answer,

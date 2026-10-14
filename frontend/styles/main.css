@@ -687,3 +687,157 @@ body {
     font-weight: 900;
     text-align: center;
 }
+
+/* Companion: settings in the * menu */
+#companion-settings {
+    background: #f4f4f4;
+    border-bottom: 1px solid #ccc;
+}
+
+#companion-settings.hidden {
+    display: none;
+}
+
+#companion-menu-btn[aria-expanded="true"] {
+    background: #000;
+    color: #fff;
+}
+
+#settings-menu #companion-settings button {
+    padding-left: 18px;
+    text-align: left;
+    background: #f4f4f4;
+}
+
+#settings-menu #companion-settings button:hover {
+    background: #000;
+    color: #fff;
+}
+
+#companion-master-btn::before {
+    content: '[ ] ';
+}
+
+#companion-master-btn[aria-pressed="true"]::before {
+    content: '[X] ';
+}
+
+.companion-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px 4px 18px;
+    font-size: 9px;
+    font-weight: 700;
+    border-bottom: 1px solid #ccc;
+    white-space: nowrap;
+}
+
+.companion-row input {
+    width: 24px;
+    padding: 1px 2px;
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    text-align: center;
+    background: #fff;
+    color: #000;
+    border: 1px solid #000;
+    border-radius: 0;
+    -webkit-appearance: none;
+    appearance: textfield;
+}
+
+.companion-row input::-webkit-inner-spin-button,
+.companion-row input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+#companion-quiet-note {
+    padding: 4px 12px 4px 18px;
+    font-size: 8px;
+    font-weight: 700;
+}
+
+#companion-quiet-note:empty {
+    display: none;
+}
+
+/* Companion: the bubble over the top of the canvas, above the eyes */
+#companion-bubble {
+    position: absolute;
+    top: calc(50% - 60px);
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.companion-bubble {
+    position: relative;
+    max-width: 124px;
+    padding: 2px 5px;
+    background: #fff;
+    color: #000;
+    border: 1px solid #000;
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 11px;
+    text-align: center;
+    white-space: nowrap;
+    cursor: default;
+    pointer-events: auto;
+    transition: opacity 0.4s;
+}
+
+.companion-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -4px;
+    left: 50%;
+    width: 2px;
+    height: 3px;
+    margin-left: -1px;
+    background: #000;
+}
+
+.companion-bubble.fading {
+    opacity: 0;
+}
+
+.bubble-answers {
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+    margin: 2px 0 1px;
+}
+
+.bubble-btn {
+    padding: 0 4px;
+    font-family: 'Courier New', monospace;
+    font-size: 8px;
+    font-weight: 700;
+    line-height: 11px;
+    background: #fff;
+    color: #000;
+    border: 1px solid #000;
+    border-radius: 0;
+    cursor: pointer;
+}
+
+.bubble-btn:hover,
+.bubble-btn:focus-visible {
+    background: #000;
+    color: #fff;
+    outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .companion-bubble {
+        transition: none;
+    }
+}

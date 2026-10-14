@@ -2,6 +2,8 @@ import { PetRenderer } from './renderer.js';
 import { PetAPI } from './api.js';
 import { GamesUI } from './games.js';
 import { ShopUI } from './shop.js';
+import { CompanionUI } from './companion.js';
+import { statusText } from './companion-logic.js';
 
 const FEED_COOLDOWN_SECS = 1800; // 30 minutes
 const PLAY_COOLDOWN_SECS = 1200; // 20 minutes
@@ -31,6 +33,8 @@ class DotApp {
             () => (this.gameStats ? this.gameStats.coins : 0),
             (result) => this.handleActionResult(result)
         );
+        // Before the first await, so the focus that opens the popover is not missed
+        this.companion = new CompanionUI(this.api, this.renderer, () => this.petState, () => this.updateUI());
 
         // Trophy / achievements button
         document.getElementById('trophy-btn').addEventListener('click', (e) => {
@@ -59,6 +63,7 @@ class DotApp {
         await this.updatePetState();
         await this.fetchStats();
         await this.showLoadWarning();
+        this.companion.start();
 
         // Start render loop
         this.renderer.start((deltaTime) => {
@@ -78,6 +83,7 @@ class DotApp {
         try {
             this.petState = await this.api.getPetState();
             this.updateUI();
+            this.companion.refreshMood();
         } catch (error) {
             console.error('Failed to get pet state:', error);
         }
@@ -110,8 +116,9 @@ class DotApp {
         const ageDays = Math.floor(this.petState.age / 86400);
         document.getElementById('pet-age').textContent = `${ageDays}d`;
 
-        // Update status text
-        document.getElementById('pet-status').textContent = this.petState.status || 'content';
+        // Update status text; an idle adult shows the companion mood
+        this.companion.syncFace();
+        document.getElementById('pet-status').textContent = statusText(this.petState, this.companion.mood());
 
         // Handle death state
         const deathOverlay = document.getElementById('death-overlay');
