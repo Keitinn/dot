@@ -73,6 +73,12 @@ pub fn dot_says_reward(rounds: u32) -> u64 {
     }
 }
 
+/// WHERE'S DOT?: 1 coin per right pick, and 1 more when all 3 are right.
+pub fn wheres_dot_reward(right: u32) -> u64 {
+    let right = right.min(3);
+    u64::from(right + u32::from(right == 3))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +148,14 @@ mod tests {
         let expected = [(0, 0), (1, 0), (2, 0), (3, 1), (4, 1), (5, 3), (6, 3), (7, 3), (8, 5), (9, 5)];
         for (rounds, coins) in expected {
             assert_eq!(dot_says_reward(rounds), coins, "{rounds} rounds");
+        }
+    }
+
+    #[test]
+    fn test_wheres_dot_reward_by_right_picks() {
+        let expected = [(0, 0), (1, 1), (2, 2), (3, 4), (4, 4)];
+        for (right, coins) in expected {
+            assert_eq!(wheres_dot_reward(right), coins, "{right} right");
         }
     }
 

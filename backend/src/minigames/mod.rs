@@ -5,6 +5,7 @@
 pub mod dot_says;
 pub mod high_low;
 pub mod hit_blow;
+pub mod wheres_dot;
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use dot_says::DotSays;
 use high_low::{Call, HighLow};
 use hit_blow::HitBlow;
+use wheres_dot::WheresDot;
 
 /// One move sent by the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -29,6 +31,8 @@ pub enum StepInput {
     Stop,
     /// DOT SAYS: the pads (0-3) tapped so far this round
     Say { order: Vec<u8> },
+    /// WHERE'S DOT?: the cup position (0-2) dot is under
+    Pick { cup: u8 },
 }
 
 /// A finished game: its coins before the daily cap, and the count
@@ -57,6 +61,7 @@ pub enum View {
     HitBlow(hit_blow::View),
     HighLow(high_low::View),
     DotSays(dot_says::View),
+    WheresDot(wheres_dot::View),
 }
 
 /// A game in progress, with its secret.
@@ -65,6 +70,7 @@ pub enum GameState {
     HitBlow(HitBlow),
     HighLow(HighLow),
     DotSays(DotSays),
+    WheresDot(WheresDot),
 }
 
 impl GameState {
@@ -74,6 +80,7 @@ impl GameState {
             "hit_blow" => Some(Self::HitBlow(HitBlow::new(rng))),
             "high_low" => Some(Self::HighLow(HighLow::new(rng))),
             "dot_says" => Some(Self::DotSays(DotSays::new(rng))),
+            "wheres_dot" => Some(Self::WheresDot(WheresDot::new(rng))),
             _ => None,
         }
     }
@@ -83,6 +90,7 @@ impl GameState {
             Self::HitBlow(g) => g.settled(),
             Self::HighLow(g) => g.settled(),
             Self::DotSays(g) => g.settled(),
+            Self::WheresDot(g) => g.settled(),
         }
     }
 
@@ -104,6 +112,9 @@ impl GameState {
             }
             (Self::HighLow(g), StepInput::Stop) => g.stop()?,
             (Self::DotSays(g), StepInput::Say { order }) => g.say(order)?,
+            (Self::WheresDot(g), StepInput::Pick { cup }) => {
+                g.pick(*cup)?;
+            }
             _ => return Err("not a move in this game".to_string()),
         }
         Ok(self.result())
@@ -114,6 +125,7 @@ impl GameState {
             Self::HitBlow(g) => View::HitBlow(g.view()),
             Self::HighLow(g) => View::HighLow(g.view()),
             Self::DotSays(g) => View::DotSays(g.view()),
+            Self::WheresDot(g) => View::WheresDot(g.view()),
         }
     }
 

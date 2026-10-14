@@ -27,6 +27,11 @@ import {
     revealMs,
     judgeTaps,
     dotSaysEndText,
+    SWAP_MS,
+    applySwap,
+    swapText,
+    pickText,
+    wheresDotEndText,
 } from '../frontend/js/games-logic.js';
 
 const c = (rank, suit = '♠') => ({ rank, suit });
@@ -141,6 +146,9 @@ const RUST_MIN_PLAY_MS = [
     ['dot_says', 1, 2000],
     ['dot_says', 3, 3600],
     ['dot_says', 8, 21600],
+    ['wheres_dot', 12, 6000],
+    ['wheres_dot', 15, 7500],
+    ['wheres_dot', 18, 9000],
 ];
 
 test('reward: minimum play time of the Rust-checked games matches game_session.rs', () => {
@@ -220,6 +228,31 @@ test('dot says: a tap is more, done or a miss', () => {
 test('dot says: the end reads as text', () => {
     assert.equal(dotSaysEndText({ cleared: 4, missed: true }), 'MISS - 4 ROUNDS');
     assert.equal(dotSaysEndText({ cleared: 8, missed: false }), 'ALL 8 ROUNDS!');
+});
+
+test("where's dot: a swap trades the cups at two positions", () => {
+    // slots[cup] = position; cups start at their own position
+    assert.deepEqual(applySwap([0, 1, 2], [0, 2]), [2, 1, 0]);
+    assert.deepEqual(applySwap([2, 1, 0], [1, 2]), [1, 2, 0]);
+    const start = [0, 1, 2];
+    applySwap(start, [0, 1]);
+    assert.deepEqual(start, [0, 1, 2], 'not mutated');
+});
+
+test("where's dot: following the swaps finds the cup dot ends under", () => {
+    // dot starts under the cup at position 0
+    let slots = [0, 1, 2];
+    for (const s of [[0, 1], [1, 2], [0, 1], [0, 1]]) slots = applySwap(slots, s);
+    assert.equal(slots[0], 2);
+});
+
+test("where's dot: swaps are slow, and read as text for reduced motion", () => {
+    assert.ok(SWAP_MS >= 500);
+    assert.equal(swapText([0, 2], 0, 5), 'SWAP 1/5: 1 <> 3');
+    assert.equal(pickText({ cup: 1, dot: 1, correct: true }), 'FOUND DOT!');
+    assert.equal(pickText({ cup: 0, dot: 2, correct: false }), 'NOT THERE');
+    assert.equal(wheresDotEndText({ correct: 2 }), '2/3 RIGHT');
+    assert.equal(wheresDotEndText({ correct: 3 }), '3/3 RIGHT!');
 });
 
 test('reward: text shows coins and the daily limit', () => {

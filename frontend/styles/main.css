@@ -668,6 +668,53 @@ body {
     color: #fff;
 }
 
+/* WHERE'S DOT?: cups glide slowly; with reduced motion they stay put */
+.cups-table {
+    position: relative;
+    width: 236px;
+    height: 64px;
+    margin: 14px auto 8px;
+}
+
+.cup {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 68px;
+    height: 60px;
+    background: #000;
+    color: #fff;
+    border: 2px solid #000;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    font-weight: 900;
+    cursor: pointer;
+    transition: transform 600ms ease-in-out;
+}
+
+.cups-table.still .cup {
+    transition: none;
+}
+
+.cup:disabled {
+    cursor: default;
+}
+
+.cup.open {
+    background: #fff;
+    color: #000;
+}
+
+.cup.open::after {
+    content: ' \25CF';
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cup {
+        transition: none;
+    }
+}
+
 /* Coins & shop */
 #coin-label {
     font-size: 10px;

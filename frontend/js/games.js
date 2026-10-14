@@ -24,6 +24,11 @@ import {
     revealMs,
     judgeTaps,
     dotSaysEndText,
+    SWAP_MS,
+    applySwap,
+    swapText,
+    pickText,
+    wheresDotEndText,
 } from './games-logic.js';
 
 const HAND_ICON = { rock: '✊', paper: '✋', scissors: '✌️' };
@@ -222,6 +227,7 @@ export class GamesUI {
         list.appendChild(button('HIT & BLOW', () => this.showHitBlow(), 'game-menu-btn'));
         list.appendChild(button('HIGH & LOW', () => this.showHighLow(), 'game-menu-btn'));
         list.appendChild(button('DOT SAYS', () => this.showDotSays(), 'game-menu-btn'));
+        list.appendChild(button("WHERE'S DOT?", () => this.showWheresDot(), 'game-menu-btn'));
         this.body.appendChild(list);
     }
 
@@ -464,6 +470,126 @@ export class GamesUI {
         };
 
         this.body.append(el('div', 'game-note', 'REPEAT THE ORDER DOT SHOWS'), status, order, grid, info, result, controls);
+        showRound();
+    }
+
+    // ---------- WHERE'S DOT? ----------
+    async showWheresDot() {
+        this.setScreen("WHERE'S DOT?", true);
+        const live = this.liveCheck();
+        const rec = (this.record.wheres_dot = this.record.wheres_dot || {});
+        const play = await this.play('wheres_dot');
+        if (!live()) return;
+        if (!play) return this.showStartFailed(() => this.showWheresDot());
+
+        // With reduced motion the cups stay put and each swap is read as text, one tap at a time.
+        const reduced = prefersReducedMotion();
+        let view = play.result.view;
+        let slots = [0, 1, 2]; // slots[cup] = position
+        let picking = false;
+
+        const status = el('div', 'game-note', '');
+        const table = el('div', 'cups-table');
+        const info = el('div', 'game-note', '');
+        const result = el('div', 'game-result', '');
+        const controls = el('div', 'game-row');
+        if (reduced) table.classList.add('still');
+        const cups = [0, 1, 2].map((cup) => {
+            const b = button(reduced ? String(cup + 1) : '', () => onPick(cup), 'cup');
+            table.appendChild(b);
+            return b;
+        });
+
+        const place = () => cups.forEach((c, cup) => {
+            c.style.transform = `translateX(${slots[cup] * 84}px)`;
+        });
+        // Shows dot under the cup at `position`, or covers every cup when null.
+        const reveal = (position) => cups.forEach((c, cup) => {
+            c.classList.toggle('open', slots[cup] === position);
+        });
+        const setPicking = (on) => {
+            picking = on;
+            for (const c of cups) c.disabled = !on;
+        };
+        const renderInfo = () => {
+            info.textContent = `ROUND ${view.round}/3  RIGHT ${view.correct}  BEST ${rec.best ?? '-'}`;
+        };
+        // Resolves when NEXT is tapped.
+        const nextTap = () => new Promise((resolve) => {
+            controls.innerHTML = '';
+            controls.appendChild(button('NEXT', () => {
+                controls.innerHTML = '';
+                resolve();
+            }));
+        });
+
+        const showRound = async () => {
+            setPicking(false);
+            // Back to the start without gliding
+            slots = [0, 1, 2];
+            table.classList.add('still');
+            place();
+            void table.offsetWidth;
+            if (!reduced) table.classList.remove('still');
+            renderInfo();
+            status.textContent = 'DOT HIDES HERE';
+            reveal(view.start);
+            await this.wait(1400);
+            reveal(null);
+            status.textContent = 'WATCH THE CUPS';
+            await this.wait(600);
+            for (const [i, swap] of view.swaps.entries()) {
+                if (reduced) {
+                    status.textContent = swapText(swap, i, view.swaps.length);
+                    await nextTap();
+                    if (!live()) return;
+                } else {
+                    slots = applySwap(slots, swap);
+                    place();
+                    await this.wait(SWAP_MS);
+                }
+            }
+            status.textContent = "WHERE'S DOT?";
+            setPicking(true);
+        };
+
+        const onPick = async (cup) => {
+            if (!picking) return;
+            setPicking(false);
+            const r = await this.move(play, { type: 'pick', cup: slots[cup] });
+            if (!live()) return;
+            if (!r) {
+                result.textContent = 'TRY AGAIN';
+                setPicking(true);
+                return;
+            }
+            view = r.view;
+            const pick = view.picks[view.picks.length - 1];
+            reveal(pick.dot);
+            result.textContent = pickText(pick);
+            renderInfo();
+            if (r.finished) return finish(r);
+            await this.wait(1400);
+            result.textContent = '';
+            showRound();
+        };
+
+        const finish = (r) => {
+            const base = wheresDotEndText(view);
+            status.textContent = '';
+            result.textContent = base;
+            if (rec.best === undefined || view.correct > rec.best) {
+                rec.best = view.correct;
+                saveRecord(this.record);
+            }
+            controls.innerHTML = '';
+            controls.appendChild(button('NEW GAME', () => this.showWheresDot()));
+            this.settle(play, 'wheres_dot', r).then((reward) => {
+                if (live()) result.textContent = base + settleText(reward);
+            });
+        };
+
+        this.body.append(el('div', 'game-note', 'FOLLOW THE CUP DOT HIDES UNDER'), status, table, info, result, controls);
         showRound();
     }
 

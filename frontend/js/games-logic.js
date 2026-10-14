@@ -117,6 +117,7 @@ export function minPlayMs(game, moves = 0) {
             const r = moves || 0;
             return Math.max(2000, 600 * ((r * (r + 1)) / 2));
         }
+        case 'wheres_dot': return Math.max(6000, 500 * (moves || 0));
         default: return 0;
     }
 }
@@ -200,6 +201,28 @@ export function judgeTaps(show, taps) {
 
 export function dotSaysEndText(view) {
     return view.missed ? `MISS - ${view.cleared} ROUNDS` : `ALL ${view.cleared} ROUNDS!`;
+}
+
+// ---------- WHERE'S DOT? (where dot ends stays in Rust until the pick) ----------
+/** One swap every 700 ms: slow, above the 500 ms floor. */
+export const SWAP_MS = 700;
+
+/** `slots[cup]` is the position (0-2) of each cup; the cups at positions a and b trade places. */
+export function applySwap(slots, [a, b]) {
+    return slots.map((at) => (at === a ? b : at === b ? a : at));
+}
+
+/** One swap as text for reduced motion; positions read as 1-3. */
+export function swapText([a, b], index, count) {
+    return `SWAP ${index + 1}/${count}: ${a + 1} <> ${b + 1}`;
+}
+
+export function pickText(pick) {
+    return pick.correct ? 'FOUND DOT!' : 'NOT THERE';
+}
+
+export function wheresDotEndText(view) {
+    return `${view.correct}/3 RIGHT${view.correct === 3 ? '!' : ''}`;
 }
 
 /** Suffix for a result line: coins earned, and DAILY LIMIT when the cap cut the reward. */

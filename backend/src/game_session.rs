@@ -36,6 +36,8 @@ pub fn min_play_time(game: &str, moves: Option<u32>) -> Option<Duration> {
             let lights = r * (r + 1) / 2;
             Some((Duration::from_millis(600) * lights).max(Duration::from_secs(2)))
         }
+        // Half a second per swap shown (12-18 over 3 rounds)
+        "wheres_dot" => Some((Duration::from_millis(500) * moves.unwrap_or(0)).max(Duration::from_secs(6))),
         _ => None,
     }
 }
@@ -189,6 +191,7 @@ mod tests {
     use crate::minigames::dot_says::DotSays;
     use crate::minigames::high_low::{Card, HighLow};
     use crate::minigames::hit_blow::HitBlow;
+    use crate::minigames::wheres_dot::WheresDot;
     use crate::minigames::{StepInput, View as MiniView};
     use crate::pet::economy::DAILY_GAME_COIN_CAP;
 
@@ -694,6 +697,111 @@ mod tests {
         assert_eq!(first_round(21), first_round(21));
     }
 
+    // Dot ends under cup 1, then 0, then 2; 12 swaps in all
+    fn wheres_dot(sessions: &mut GameSessions, t0: Instant) -> String {
+        let game = WheresDot::with_rounds([
+            (0, &[[0, 1], [0, 2], [1, 2], [1, 2]]),
+            (2, &[[0, 2], [1, 2], [0, 1], [0, 1]]),
+            (1, &[[1, 2], [0, 1], [0, 1], [0, 1]]),
+        ]);
+        start_with(sessions, "wheres_dot", GameState::WheresDot(game), t0)
+    }
+
+    fn pick(cup: u8) -> StepInput {
+        StepInput::Pick { cup }
+    }
+
+    #[test]
+    fn wheres_dot_shows_swaps_per_round_and_judges_picks() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = wheres_dot(&mut sessions, t0);
+        let look = sessions.step(&token, &StepInput::Look, t0).unwrap();
+        let MiniView::WheresDot(view) = look.view else { panic!("not where's dot") };
+        assert_eq!((view.start, view.swaps.len()), (Some(0), 4));
+
+        let first = sessions.step(&token, &pick(1), t0).unwrap();
+        let MiniView::WheresDot(view) = first.view else { panic!("not where's dot") };
+        assert!(view.picks[0].correct);
+        assert_eq!((view.round, view.start), (2, Some(2)));
+        sessions.step(&token, &pick(0), t0).unwrap();
+        let last = sessions.step(&token, &pick(2), t0).unwrap();
+        assert_eq!((last.finished, last.moves, last.reward), (true, Some(12), Some(4)));
+
+        // The UI claims nothing was right
+        let r = claim(&mut sessions, &mut stats, &token, "wheres_dot", "lose", Some(0), t0 + secs(6)).unwrap();
+
+        assert_eq!(r, GameReward { earned: 4, capped: false });
+    }
+
+    #[test]
+    fn wheres_dot_never_sends_where_dot_ends_before_the_pick() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = wheres_dot(&mut sessions, t0);
+        for input in [StepInput::Look, pick(2), pick(0)] {
+            let json = serde_json::to_value(sessions.step(&token, &input, t0).unwrap()).unwrap();
+            let round = json["view"]["round"].as_u64().unwrap() as usize;
+            // Picks hold only the rounds already played
+            assert_eq!(json["view"]["picks"].as_array().unwrap().len(), round - 1, "{json}");
+            assert_eq!(json["reward"], serde_json::Value::Null);
+        }
+    }
+
+    #[test]
+    fn wheres_dot_refuses_a_bad_cup_and_an_early_report() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = wheres_dot(&mut sessions, t0);
+        assert!(sessions.step(&token, &pick(3), t0).is_err());
+        assert!(sessions.step(&token, &say(&[0]), t0).is_err());
+        sessions.step(&token, &pick(1), t0).unwrap();
+
+        assert!(claim(&mut sessions, &mut stats, &token, "wheres_dot", "win", Some(3), t0 + secs(60)).is_err());
+        assert_eq!(stats.coins, 0);
+    }
+
+    #[test]
+    fn wheres_dot_must_take_half_a_second_per_swap() {
+        let t0 = Instant::now();
+        // 12 swaps x 0.5 s = 6 s
+        for (elapsed, ok) in [(Duration::from_millis(5_999), false), (secs(6), true)] {
+            let mut sessions = GameSessions::with_seed(1);
+            let mut stats = GameStats::new();
+            let token = wheres_dot(&mut sessions, t0);
+            for cup in [0, 0, 0] {
+                sessions.step(&token, &pick(cup), t0).unwrap();
+            }
+            let r = claim(&mut sessions, &mut stats, &token, "wheres_dot", "x", None, t0 + elapsed);
+            assert_eq!(r.is_ok(), ok, "after {elapsed:?}");
+        }
+    }
+
+    #[test]
+    fn wheres_dot_is_replayed_by_the_same_seed() {
+        let t0 = Instant::now();
+        let play = |seed| {
+            let mut sessions = GameSessions::with_seed(seed);
+            let token = sessions.start("wheres_dot", t0).unwrap();
+            [StepInput::Look, pick(0), pick(1), pick(2)].map(|input| sessions.step(&token, &input, t0).unwrap())
+        };
+        assert_eq!(play(31), play(31));
+    }
+
+    #[test]
+    fn one_seeded_session_store_deals_every_new_game() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        for game in ["hit_blow", "high_low", "dot_says", "wheres_dot"] {
+            let token = sessions.start(game, t0).unwrap();
+            let look = sessions.step(&token, &StepInput::Look, t0).unwrap();
+            assert!(!look.finished, "{game}");
+            assert_eq!(serde_json::to_value(&look).unwrap()["view"]["game"], game);
+        }
+    }
+
     #[test]
     fn minimum_play_times() {
         assert_eq!(min_play_time("janken", None), Some(secs(1)));
@@ -711,6 +819,9 @@ mod tests {
         assert_eq!(min_play_time("dot_says", Some(1)), Some(secs(2)));
         assert_eq!(min_play_time("dot_says", Some(3)), Some(Duration::from_millis(3_600)));
         assert_eq!(min_play_time("dot_says", Some(8)), Some(Duration::from_millis(21_600)));
+        assert_eq!(min_play_time("wheres_dot", Some(12)), Some(secs(6)));
+        assert_eq!(min_play_time("wheres_dot", Some(15)), Some(Duration::from_millis(7_500)));
+        assert_eq!(min_play_time("wheres_dot", Some(18)), Some(secs(9)));
         assert_eq!(min_play_time("poker", None), None);
     }
 
