@@ -41,6 +41,10 @@ export class PetAPI {
         return await invoke('buy_snack', { snackId });
     }
 
+    async getLoadWarning() {
+        return await invoke('get_load_warning');
+    }
+
     async quitApp() {
         return await invoke('quit_app');
     }
