@@ -6,9 +6,11 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use crate::pet::PetState;
 use crate::pet::GameStats;
+use crate::companion::CompanionState;
 
 pub const STATE_FILE: &str = "pet-state.json";
 pub const STATS_FILE: &str = "game-stats.json";
+pub const COMPANION_FILE: &str = "companion.json";
 
 /// Result of reading one save file. Reading never fails outright: a broken
 /// save is moved aside instead of being reported as an error, so the caller
@@ -63,6 +65,19 @@ pub fn save_stats_in(dir: &Path, stats: &GameStats) -> Result<(), String> {
 
 pub fn load_stats_from(dir: &Path) -> LoadOutcome<GameStats> {
     load_json(&dir.join(STATS_FILE))
+}
+
+pub fn save_companion(companion: &CompanionState) -> Result<(), String> {
+    save_companion_in(&config_dir()?, companion)
+}
+
+/// A file of its own, so a broken companion save never touches the pet or the stats.
+pub fn save_companion_in(dir: &Path, companion: &CompanionState) -> Result<(), String> {
+    save_json(&dir.join(COMPANION_FILE), companion)
+}
+
+pub fn load_companion_from(dir: &Path) -> LoadOutcome<CompanionState> {
+    load_json(&dir.join(COMPANION_FILE))
 }
 
 fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -469,6 +484,54 @@ mod tests {
         match load_state_from(dir.path()) {
             LoadOutcome::Loaded(pet) => assert_eq!(pet.name, "safe"),
             other => panic!("expected Loaded, got {:?}", other),
+        }
+    }
+
+    fn companion_with_bond(bond: u16) -> CompanionState {
+        CompanionState { bond, ..CompanionState::default() }
+    }
+
+    #[test]
+    fn companion_round_trips() {
+        let dir = TempDir::new();
+        save_companion_in(dir.path(), &companion_with_bond(280)).unwrap();
+
+        match load_companion_from(dir.path()) {
+            LoadOutcome::Loaded(companion) => assert_eq!(companion.bond, 280),
+            other => panic!("expected Loaded, got {:?}", other),
+        }
+        assert_eq!(dir.file_names(), vec!["companion.json"]);
+    }
+
+    #[test]
+    fn missing_companion_loads_as_missing() {
+        let dir = TempDir::new();
+        assert!(matches!(load_companion_from(dir.path()), LoadOutcome::Missing));
+    }
+
+    #[test]
+    fn broken_companion_is_moved_aside_with_contents_intact() {
+        let dir = TempDir::new();
+        fs::write(dir.path().join(COMPANION_FILE), BROKEN_JSON).unwrap();
+
+        assert!(matches!(load_companion_from(dir.path()), LoadOutcome::Reset));
+
+        assert!(!dir.path().join(COMPANION_FILE).exists());
+        let corrupt = dir.corrupt_files("companion");
+        assert_eq!(corrupt.len(), 1, "files: {:?}", dir.file_names());
+        assert_eq!(fs::read_to_string(&corrupt[0]).unwrap(), BROKEN_JSON);
+    }
+
+    #[test]
+    fn broken_companion_with_good_bak_is_recovered_from_bak() {
+        let dir = TempDir::new();
+        save_companion_in(dir.path(), &companion_with_bond(100)).unwrap();
+        save_companion_in(dir.path(), &companion_with_bond(120)).unwrap();
+        fs::write(dir.path().join(COMPANION_FILE), BROKEN_JSON).unwrap();
+
+        match load_companion_from(dir.path()) {
+            LoadOutcome::Recovered(companion) => assert_eq!(companion.bond, 100),
+            other => panic!("expected Recovered, got {:?}", other),
         }
     }
 
