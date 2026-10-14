@@ -10,6 +10,7 @@ const SLEEP_HUNGER_DECAY_MULT: f64 = 0.5;  // hunger decays at half rate
 const SLEEP_ENERGY_RECOVERY_RATE: f64 = 0.5; // +0.5 energy per minute
 
 const HEALTH_RECOVERY_RATE: f64 = 0.3; // +0.3 health per minute
+const HEALTH_DECAY_RATE: f64 = 0.05; // -0.05 health per minute while a need is critical
 
 // Absence ("deep sleep"). See design/gdd/companion.md F5 (Issue #16).
 /// A gap longer than this counts as absence: only its first AWAY_THRESHOLD_SECS use the present rules.
@@ -32,7 +33,6 @@ pub struct ElapsedSplit {
 }
 
 /// Splits a gap with no updates (app not running, Mac asleep, lid closed) per F5.
-/// Absence detected from input idle time (P6-b) is meant to be combined here by taking the larger away part.
 pub fn split_elapsed(elapsed_seconds: u64) -> ElapsedSplit {
     let delta = elapsed_seconds.min(OFFLINE_CAP_SECS);
     if delta > AWAY_THRESHOLD_SECS {
@@ -42,51 +42,119 @@ pub fn split_elapsed(elapsed_seconds: u64) -> ElapsedSplit {
     }
 }
 
+/// Adds absence while the app runs but nobody touches the Mac (F5, P6-b) to the gap split.
+/// Idle time past the threshold is the tail of the elapsed time; when both rules apply, the larger away part wins.
+pub fn split_elapsed_with_idle(elapsed_seconds: u64, idle_seconds: u64) -> ElapsedSplit {
+    let gap = split_elapsed(elapsed_seconds);
+    let delta = gap.present_secs + gap.away_secs;
+    let idle_away = delta.min(idle_seconds.saturating_sub(AWAY_THRESHOLD_SECS));
+    let away_secs = gap.away_secs.max(idle_away);
+    ElapsedSplit { present_secs: delta - away_secs, away_secs }
+}
+
+/// Needs as real numbers while integrating: the public whole points plus the carried remainders.
+#[derive(Debug, Clone, Copy)]
+struct Needs {
+    hunger: f64,
+    happiness: f64,
+    energy: f64,
+    health: f64,
+}
+
+impl Needs {
+    fn read(pet: &PetState) -> Self {
+        Self {
+            hunger: carried(pet.hunger, pet.hunger_frac),
+            happiness: carried(pet.happiness, pet.happiness_frac),
+            energy: carried(pet.energy, pet.energy_frac),
+            health: carried(pet.health, pet.health_frac),
+        }
+    }
+
+    fn write(&self, pet: &mut PetState) {
+        (pet.hunger, pet.hunger_frac) = rounded(self.hunger);
+        (pet.happiness, pet.happiness_frac) = rounded(self.happiness);
+        (pet.energy, pet.energy_frac) = rounded(self.energy);
+        (pet.health, pet.health_frac) = rounded(self.health);
+    }
+}
+
+/// Clamped, so a hand-edited save or FEED on top of a carried +0.4 cannot leave 0..=100.
+fn carried(whole: u8, frac: f64) -> f64 {
+    let frac = if frac.is_finite() { frac } else { 0.0 };
+    (f64::from(whole) + frac).clamp(0.0, 100.0)
+}
+
+/// Rounds to the nearest whole point (98.5 shows as 99) and returns what is left over.
+/// Float noise is snapped away first, so 98.4999999999 rounds like 98.5.
+fn rounded(value: f64) -> (u8, f64) {
+    let value = value.clamp(0.0, 100.0);
+    let whole = ((value * 1e9).round() / 1e9).round();
+    (whole as u8, value - whole)
+}
+
+/// Whole minutes, then the remaining part of a minute (F0-3: long gaps are integrated one minute at a time).
+fn minute_steps(seconds: u64) -> impl Iterator<Item = f64> {
+    let last_partial_minute = (seconds % 60) as f64 / 60.0;
+    (0..seconds / 60)
+        .map(|_| 1.0)
+        .chain((last_partial_minute > 0.0).then_some(last_partial_minute))
+}
+
 fn allows_health_recovery(hunger: f64, happiness: f64, energy: f64) -> bool {
     hunger > 50.0 && happiness > 50.0 && energy > 30.0
 }
 
-pub fn apply_decay(pet: &mut PetState, elapsed_seconds: u64) {
-    if !pet.is_alive {
-        return;
-    }
+/// One step of the present rules. Health reacts to the needs as they are at this step.
+fn present_step(needs: &mut Needs, minutes: f64, sleeping: bool) {
+    // Hunger decays slower when sleeping
+    let hunger_rate = if sleeping { HUNGER_DECAY_RATE * SLEEP_HUNGER_DECAY_MULT } else { HUNGER_DECAY_RATE };
+    needs.hunger = (needs.hunger - hunger_rate * minutes).max(0.0);
 
-    let minutes = elapsed_seconds as f64 / 60.0;
-    let is_sleeping = pet.activity == Activity::Sleeping;
-
-    // Apply hunger decay (slower when sleeping)
-    let hunger_rate = if is_sleeping { HUNGER_DECAY_RATE * SLEEP_HUNGER_DECAY_MULT } else { HUNGER_DECAY_RATE };
-    let hunger_decay = (hunger_rate * minutes) as u8;
-    pet.hunger = pet.hunger.saturating_sub(hunger_decay);
-
-    // Happiness: no decay while sleeping
-    if !is_sleeping {
-        let happiness_decay = (HAPPINESS_DECAY_RATE * minutes) as u8;
-        pet.happiness = pet.happiness.saturating_sub(happiness_decay);
-    }
-
-    // Energy: recovers while sleeping, decays otherwise
-    if is_sleeping {
-        let energy_recovery = (SLEEP_ENERGY_RECOVERY_RATE * minutes) as u8;
-        pet.energy = (pet.energy + energy_recovery).min(100);
+    // Happiness: no decay while sleeping. Energy: recovers while sleeping, decays otherwise
+    if sleeping {
+        needs.energy = (needs.energy + SLEEP_ENERGY_RECOVERY_RATE * minutes).min(100.0);
     } else {
-        let energy_decay = (ENERGY_DECAY_RATE * minutes) as u8;
-        pet.energy = pet.energy.saturating_sub(energy_decay);
+        needs.happiness = (needs.happiness - HAPPINESS_DECAY_RATE * minutes).max(0.0);
+        needs.energy = (needs.energy - ENERGY_DECAY_RATE * minutes).max(0.0);
     }
 
     // Health is affected by critical needs (more forgiving thresholds)
-    if pet.hunger < 10 || pet.happiness < 10 || pet.energy < 5 {
-        let health_decay = (0.05 * minutes) as u8; // slower health decay
-        pet.health = pet.health.saturating_sub(health_decay);
-    } else if allows_health_recovery(f64::from(pet.hunger), f64::from(pet.happiness), f64::from(pet.energy)) {
-        // Recover health more easily
-        let health_recovery = (HEALTH_RECOVERY_RATE * minutes) as u8; // faster recovery
-        pet.health = (pet.health + health_recovery).min(100);
+    if needs.hunger < 10.0 || needs.happiness < 10.0 || needs.energy < 5.0 {
+        needs.health = (needs.health - HEALTH_DECAY_RATE * minutes).max(0.0);
+    } else if allows_health_recovery(needs.hunger, needs.happiness, needs.energy) {
+        needs.health = (needs.health + HEALTH_RECOVERY_RATE * minutes).min(100.0);
     }
 }
 
-/// Deep sleep for the away part of a gap (F5): the sleep rules, plus a hunger floor and no health loss.
-/// Steps minute by minute in f64 so slow rates are not truncated away, then rounds back to u8.
+/// The present rules for `elapsed_seconds` starting at `pet.last_update`, one minute at a time.
+/// A sleep that ends inside the span is split there (sleeping rules before, awake rules after).
+/// Death is checked after every step, and decay stops once the pet dies.
+pub fn apply_decay(pet: &mut PetState, elapsed_seconds: u64) {
+    let sleeping_secs = match (pet.activity, pet.activity_until) {
+        (Activity::Sleeping, Some(until)) => (until - pet.last_update).max(0) as u64,
+        (Activity::Sleeping, None) => u64::MAX,
+        _ => 0,
+    }
+    .min(elapsed_seconds);
+
+    integrate_present(pet, sleeping_secs, true);
+    integrate_present(pet, elapsed_seconds - sleeping_secs, false);
+}
+
+fn integrate_present(pet: &mut PetState, seconds: u64, sleeping: bool) {
+    let mut needs = Needs::read(pet);
+    for minutes in minute_steps(seconds) {
+        if !pet.is_alive {
+            return;
+        }
+        present_step(&mut needs, minutes, sleeping);
+        needs.write(pet);
+        super::lifecycle::check_death(pet);
+    }
+}
+
+/// Deep sleep for the away part (F5): the sleep rules, plus a hunger floor and no health loss.
 /// Never kills the pet and never changes `activity`, so FEED is not refused as "sleeping" on return.
 pub fn apply_deep_sleep(pet: &mut PetState, away_seconds: u64) {
     if !pet.is_alive || away_seconds == 0 {
@@ -94,33 +162,23 @@ pub fn apply_deep_sleep(pet: &mut PetState, away_seconds: u64) {
     }
 
     let hunger_rate = HUNGER_DECAY_RATE * SLEEP_HUNGER_DECAY_MULT * AWAY_STAGE_DECAY_MULT;
-    let hunger_floor = AWAY_HUNGER_FLOOR.min(f64::from(pet.hunger));
-    let happiness = f64::from(pet.happiness); // no decay while sleeping
-    let mut hunger = f64::from(pet.hunger);
-    let mut energy = f64::from(pet.energy);
-    let mut health = f64::from(pet.health);
+    let mut needs = Needs::read(pet);
+    let hunger_floor = AWAY_HUNGER_FLOOR.min(needs.hunger);
 
-    let whole_minutes = away_seconds / 60;
-    let last_partial_minute = (away_seconds % 60) as f64 / 60.0;
-    let steps = (0..whole_minutes)
-        .map(|_| 1.0)
-        .chain((last_partial_minute > 0.0).then_some(last_partial_minute));
-
-    for minutes in steps {
+    for minutes in minute_steps(away_seconds) {
         // The floor is at most 30, so hunger there rules out recovery and nothing changes from here on
-        if hunger <= hunger_floor && energy >= 100.0 {
+        if needs.hunger <= hunger_floor && needs.energy >= 100.0 {
             break;
         }
-        hunger = (hunger - hunger_rate * minutes).max(hunger_floor);
-        energy = (energy + SLEEP_ENERGY_RECOVERY_RATE * minutes).min(100.0);
-        if allows_health_recovery(hunger, happiness, energy) {
-            health = (health + HEALTH_RECOVERY_RATE * minutes).min(100.0);
+        needs.hunger = (needs.hunger - hunger_rate * minutes).max(hunger_floor);
+        needs.energy = (needs.energy + SLEEP_ENERGY_RECOVERY_RATE * minutes).min(100.0);
+        // happiness: no decay while sleeping
+        if allows_health_recovery(needs.hunger, needs.happiness, needs.energy) {
+            needs.health = (needs.health + HEALTH_RECOVERY_RATE * minutes).min(100.0);
         }
     }
 
-    pet.hunger = hunger.round() as u8;
-    pet.energy = energy.round() as u8;
-    pet.health = health.round() as u8;
+    needs.write(pet);
 }
 
 #[cfg(test)]
@@ -289,6 +347,59 @@ mod tests {
     fn test_split_clamps_to_offline_cap() {
         assert_eq!(split_elapsed(200 * HOUR), split_elapsed(OFFLINE_CAP_SECS));
         assert_eq!(split_elapsed(200 * HOUR).away_secs, 96 * HOUR - AWAY_THRESHOLD_SECS);
+    }
+
+    #[test]
+    fn test_split_short_idle_is_all_present() {
+        assert_eq!(split_elapsed_with_idle(5, 0), ElapsedSplit { present_secs: 5, away_secs: 0 });
+        assert_eq!(split_elapsed_with_idle(5, AWAY_THRESHOLD_SECS), ElapsedSplit { present_secs: 5, away_secs: 0 });
+    }
+
+    #[test]
+    fn test_split_idle_past_threshold_is_away() {
+        // Idle 40 minutes: the last 10 minutes are away, so a 5 second update is all away
+        assert_eq!(split_elapsed_with_idle(5, 40 * 60), ElapsedSplit { present_secs: 0, away_secs: 5 });
+        // The update that crosses the threshold is split there: present first, away after
+        assert_eq!(
+            split_elapsed_with_idle(60, AWAY_THRESHOLD_SECS + 20),
+            ElapsedSplit { present_secs: 40, away_secs: 20 }
+        );
+    }
+
+    #[test]
+    fn test_split_takes_larger_away_of_gap_and_idle() {
+        // Gap rule wins: 2 h gap with fresh input
+        assert_eq!(split_elapsed_with_idle(2 * HOUR, 0), split_elapsed(2 * HOUR));
+        // Idle rule wins: 2 h gap after 3 h without input
+        assert_eq!(split_elapsed_with_idle(2 * HOUR, 3 * HOUR), ElapsedSplit { present_secs: 0, away_secs: 2 * HOUR });
+        // Both are clamped to the cap
+        assert_eq!(split_elapsed_with_idle(200 * HOUR, 300 * HOUR).away_secs, OFFLINE_CAP_SECS);
+    }
+
+    #[test]
+    fn test_decay_carries_fractions_between_calls() {
+        let mut pet = new_pet();
+        for _ in 0..12 {
+            apply_decay(&mut pet, 5);
+            pet.last_update += 5;
+        }
+        let mut once = new_pet();
+        apply_decay(&mut once, 60);
+        assert!((pet.hunger_frac - once.hunger_frac).abs() < 1e-9);
+        assert!((f64::from(pet.hunger) + pet.hunger_frac - 99.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_decay_stops_at_death() {
+        let mut pet = new_pet();
+        pet.hunger = 0;
+        pet.happiness = 0;
+        pet.energy = 1;
+        pet.health = 80;
+        apply_decay(&mut pet, 3600);
+        assert!(!pet.is_alive);
+        // Died within the first 5 minutes (energy below 0.5), so health barely moved
+        assert!(pet.health >= 79, "health {}", pet.health);
     }
 
     #[test]
