@@ -40,6 +40,7 @@ export class CompanionUI {
         this.result = null;
         this.lastOpenAt = null;
         this.opening = false;
+        this.openCount = 0;
         this.refreshing = false;
 
         this.live = document.getElementById('companion-bubble');
@@ -53,6 +54,10 @@ export class CompanionUI {
         window.addEventListener('blur', () => this.dismiss());
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) this.dismiss();
+        });
+        // The keyboard way to do what a click on the bubble does
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && this.bubble) this.dismiss();
         });
 
         this.settings = null;
@@ -79,11 +84,14 @@ export class CompanionUI {
         if (!shouldCallOpen({ now, lastCallAt: this.lastOpenAt, inFlight: this.opening })) return;
         this.lastOpenAt = now;
         this.opening = true;
+        this.openCount += 1;
         let result;
         try {
             result = await this.api.companionOpen();
         } catch (error) {
             console.error('Failed to open companion:', error);
+            // Let the next focus try again at once
+            this.lastOpenAt = null;
             return;
         } finally {
             this.opening = false;
@@ -99,8 +107,11 @@ export class CompanionUI {
     async refreshMood() {
         if (this.refreshing || this.opening || !this.mood() || !document.hasFocus()) return;
         this.refreshing = true;
+        const openCount = this.openCount;
         try {
             const { enabled, mood } = await this.api.refreshCompanionMood();
+            // An open that started meanwhile has the newer mood
+            if (openCount !== this.openCount) return;
             if (this.result && (enabled !== this.result.enabled || mood !== this.result.mood)) {
                 this.result = { ...this.result, enabled, mood };
                 this.onMoodChange();
@@ -158,7 +169,12 @@ export class CompanionUI {
         this.hovering = false;
         this.bubbleTimes = { shownAt: performance.now(), hoverEndedAt: null };
         this.live.appendChild(bubble);
-        this.scheduleFade();
+        // mouseenter does not fire for a pointer that is already there
+        if (bubble.matches(':hover')) {
+            hold();
+        } else {
+            this.scheduleFade();
+        }
     }
 
     scheduleFade() {
@@ -275,7 +291,7 @@ export class CompanionUI {
     renderSettings() {
         const s = this.settings;
         if (!s) return;
-        // The label stays ON; aria-pressed (drawn as [X] / [ ]) carries the state
+        // The label stays COMPANION; aria-pressed (drawn as [X] / [ ]) carries the state
         this.masterBtn.setAttribute('aria-pressed', String(s.master_on));
         this.quietStart.value = String(s.quiet_start);
         this.quietEnd.value = String(s.quiet_end);
