@@ -93,6 +93,7 @@ fn main() {
             commands::get_achievements,
             commands::get_snacks,
             commands::start_game,
+            commands::game_step,
             commands::report_game_result,
             commands::buy_snack,
             commands::get_load_warning,

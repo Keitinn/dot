@@ -110,8 +110,119 @@ export function minPlayMs(game, moves = 0) {
         case 'janken': return 1000;
         case 'blackjack': return 3000;
         case 'memory': return Math.max(4000, 500 * (moves || 0));
+        // Games checked in Rust: `moves` is the count game_step returned when finished
+        case 'hit_blow': return Math.max(3000, 1000 * (moves || 0));
+        case 'high_low': return Math.max(2000, 500 * (moves || 0));
+        case 'dot_says': {
+            const r = moves || 0;
+            return Math.max(2000, 600 * ((r * (r + 1)) / 2));
+        }
+        case 'wheres_dot': return Math.max(6000, 500 * (moves || 0));
         default: return 0;
     }
+}
+
+/** rewardText for the games checked in Rust, where a refused report is shown, not hidden. */
+export function settleText(r) {
+    return r ? rewardText(r) : ' TRY AGAIN';
+}
+
+// ---------- HIT & BLOW (the answer stays in Rust) ----------
+export const HIT_BLOW_DIGITS = 3;
+
+/** 3 distinct digits 0-9: what game_step accepts as a guess. */
+export function canGuess(digits) {
+    return (
+        digits.length === HIT_BLOW_DIGITS &&
+        digits.every((d) => Number.isInteger(d) && d >= 0 && d <= 9) &&
+        new Set(digits).size === digits.length
+    );
+}
+
+/** The typed digits after tapping `d`: a repeat or a 4th digit is ignored. */
+export function typeDigit(typed, d) {
+    if (typed.length >= HIT_BLOW_DIGITS || typed.includes(d)) return typed;
+    return [...typed, d];
+}
+
+export function hitBlowSlots(typed) {
+    const slots = [];
+    for (let i = 0; i < HIT_BLOW_DIGITS; i++) slots.push(i < typed.length ? String(typed[i]) : '_');
+    return slots.join(' ');
+}
+
+export function hitBlowRowText(row) {
+    return `${row.digits.join('')} ${row.hit}H ${row.blow}B`;
+}
+
+// ---------- HIGH & LOW (the deck stays in Rust) ----------
+const VERDICT_TEXT = { win: 'RIGHT', draw: 'TIE', lose: 'MISS' };
+const HIGH_LOW_END_TEXT = { lost: 'MISS', stopped: 'STOPPED', deck_out: 'NO CARDS LEFT', max: 'TOP STREAK!' };
+
+/** A card from Rust ({ rank: 1-13, suit: 0-3 }) drawn like a blackjack card. */
+export function cardText(card) {
+    return `${RANKS[card.rank - 1]}${SUITS[card.suit]}`;
+}
+
+export function turnText(turn) {
+    if (!turn) return '';
+    return `${turn.call.toUpperCase()} ${cardText(turn.card)} ${VERDICT_TEXT[turn.verdict]}`;
+}
+
+export function highLowEndText(end) {
+    return HIGH_LOW_END_TEXT[end] || '';
+}
+
+// ---------- DOT SAYS (the order stays in Rust, one round at a time) ----------
+/** One light every 800 ms: slow, well above the 600 ms floor. */
+export const DOT_SAYS_STEP_MS = 800;
+const DOT_SAYS_LIT_MS = 500;
+
+/** When each pad of `show` turns on and off, in ms from the start. */
+export function lightSchedule(show, stepMs = DOT_SAYS_STEP_MS) {
+    return show.map((pad, i) => ({ pad, onAt: i * stepMs, offAt: i * stepMs + DOT_SAYS_LIT_MS }));
+}
+
+/** The order as text for reduced motion: pads 0-3 read as 1-4. */
+export function orderText(show) {
+    return show.map((pad) => pad + 1).join(' ');
+}
+
+/** How long the text order stays up with reduced motion. */
+export function revealMs(length) {
+    return Math.max(1500, 800 * length);
+}
+
+/** 'more' while the taps so far match, 'done' when the round is complete, 'miss' otherwise. */
+export function judgeTaps(show, taps) {
+    for (let i = 0; i < taps.length; i++) if (taps[i] !== show[i]) return 'miss';
+    return taps.length === show.length ? 'done' : 'more';
+}
+
+export function dotSaysEndText(view) {
+    return view.missed ? `MISS - ${view.cleared} ROUNDS` : `ALL ${view.cleared} ROUNDS!`;
+}
+
+// ---------- WHERE'S DOT? (where dot ends stays in Rust until the pick) ----------
+/** One swap every 700 ms: slow, above the 500 ms floor. */
+export const SWAP_MS = 700;
+
+/** `slots[cup]` is the position (0-2) of each cup; the cups at positions a and b trade places. */
+export function applySwap(slots, [a, b]) {
+    return slots.map((at) => (at === a ? b : at === b ? a : at));
+}
+
+/** One swap as text for reduced motion; positions read as 1-3. */
+export function swapText([a, b], index, count) {
+    return `SWAP ${index + 1}/${count}: ${a + 1} <> ${b + 1}`;
+}
+
+export function pickText(pick) {
+    return pick.correct ? 'FOUND DOT!' : 'NOT THERE';
+}
+
+export function wheresDotEndText(view) {
+    return `${view.correct}/3 RIGHT${view.correct === 3 ? '!' : ''}`;
 }
 
 /** Suffix for a result line: coins earned, and DAILY LIMIT when the cap cut the reward. */

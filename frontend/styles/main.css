@@ -473,10 +473,10 @@ body {
 }
 
 .game-menu {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    margin-top: 40px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 16px;
 }
 
 .game-menu-btn,
@@ -595,6 +595,124 @@ body {
 .bj-card.hidden-card {
     background: #000;
     color: #fff;
+}
+
+.game-btn:disabled {
+    cursor: default;
+    color: #888;
+    border-color: #888;
+}
+
+/* HIT & BLOW */
+.hb-slots {
+    letter-spacing: 2px;
+    margin: 2px 0;
+}
+
+.hb-history {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 8px;
+    min-height: 56px;
+    font-size: 10px;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+}
+
+.hb-keypad {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 4px;
+    margin: 6px 0;
+}
+
+.hb-key {
+    padding: 5px 0;
+}
+
+/* HIGH & LOW */
+.hl-card {
+    min-width: 64px;
+    padding: 22px 8px;
+    margin: 10px 0 4px;
+    font-size: 20px;
+}
+
+/* DOT SAYS: 4 pads that light by turning black, with no fade */
+.says-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 64px);
+    gap: 10px;
+    justify-content: center;
+    margin: 4px 0;
+}
+
+.says-pad {
+    height: 64px;
+    background: #fff;
+    color: #000;
+    border: 2px solid #000;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    font-weight: 900;
+    cursor: pointer;
+}
+
+.says-pad:disabled {
+    cursor: default;
+    color: #000;
+}
+
+.says-pad.lit {
+    background: #000;
+    color: #fff;
+}
+
+/* WHERE'S DOT?: cups glide slowly; with reduced motion they stay put */
+.cups-table {
+    position: relative;
+    width: 236px;
+    height: 64px;
+    margin: 14px auto 8px;
+}
+
+.cup {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 68px;
+    height: 60px;
+    background: #000;
+    color: #fff;
+    border: 2px solid #000;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    font-weight: 900;
+    cursor: pointer;
+    transition: transform 600ms ease-in-out;
+}
+
+.cups-table.still .cup {
+    transition: none;
+}
+
+.cup:disabled {
+    cursor: default;
+}
+
+.cup.open {
+    background: #fff;
+    color: #000;
+}
+
+.cup.open::after {
+    content: ' \25CF';
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cup {
+        transition: none;
+    }
 }
 
 /* Coins & shop */

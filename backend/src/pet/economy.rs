@@ -49,6 +49,36 @@ pub fn game_reward(game: &str, outcome: &str, moves: Option<u32>) -> Result<u64,
     }
 }
 
+/// HIT & BLOW: 8 coins for a first-guess clear, 1 less per extra guess,
+/// down to 1 on the 8th; nothing when not solved.
+pub fn hit_blow_reward(solved_in: Option<u32>) -> u64 {
+    match solved_in {
+        Some(guesses @ 1..=8) => u64::from(9 - guesses),
+        _ => 0,
+    }
+}
+
+/// HIGH & LOW: 1 coin per call in the streak, up to 5.
+pub fn high_low_reward(streak: u32) -> u64 {
+    u64::from(streak.min(5))
+}
+
+/// DOT SAYS, by rounds cleared: 3-4 pay 1, 5-7 pay 3, 8 pay 5; fewer pay nothing.
+pub fn dot_says_reward(rounds: u32) -> u64 {
+    match rounds {
+        0..=2 => 0,
+        3..=4 => 1,
+        5..=7 => 3,
+        _ => 5,
+    }
+}
+
+/// WHERE'S DOT?: 1 coin per right pick, and 1 more when all 3 are right.
+pub fn wheres_dot_reward(right: u32) -> u64 {
+    let right = right.min(3);
+    u64::from(right + u32::from(right == 3))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +122,41 @@ mod tests {
         assert_eq!(game_reward("memory", "clear", Some(99)), Ok(1)); // floor of 1
         assert_eq!(game_reward("memory", "clear", Some(0)), Ok(10)); // never above 10
         assert!(game_reward("memory", "clear", None).is_err());
+    }
+
+    #[test]
+    fn test_hit_blow_reward_by_guesses() {
+        let expected = [(1, 8), (2, 7), (3, 6), (4, 5), (5, 4), (6, 3), (7, 2), (8, 1)];
+        for (guesses, coins) in expected {
+            assert_eq!(hit_blow_reward(Some(guesses)), coins, "solved in {guesses}");
+        }
+        assert_eq!(hit_blow_reward(None), 0);
+        assert_eq!(hit_blow_reward(Some(0)), 0);
+        assert_eq!(hit_blow_reward(Some(9)), 0);
+    }
+
+    #[test]
+    fn test_high_low_reward_by_streak() {
+        let expected = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 5), (51, 5)];
+        for (streak, coins) in expected {
+            assert_eq!(high_low_reward(streak), coins, "streak {streak}");
+        }
+    }
+
+    #[test]
+    fn test_dot_says_reward_by_rounds_cleared() {
+        let expected = [(0, 0), (1, 0), (2, 0), (3, 1), (4, 1), (5, 3), (6, 3), (7, 3), (8, 5), (9, 5)];
+        for (rounds, coins) in expected {
+            assert_eq!(dot_says_reward(rounds), coins, "{rounds} rounds");
+        }
+    }
+
+    #[test]
+    fn test_wheres_dot_reward_by_right_picks() {
+        let expected = [(0, 0), (1, 1), (2, 2), (3, 4), (4, 4)];
+        for (right, coins) in expected {
+            assert_eq!(wheres_dot_reward(right), coins, "{right} right");
+        }
     }
 
     #[test]

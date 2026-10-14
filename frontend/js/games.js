@@ -11,6 +11,24 @@ import {
     judgeBlackjack,
     minPlayMs,
     rewardText,
+    settleText,
+    canGuess,
+    typeDigit,
+    hitBlowRowText,
+    hitBlowSlots,
+    cardText,
+    turnText,
+    highLowEndText,
+    lightSchedule,
+    orderText,
+    revealMs,
+    judgeTaps,
+    dotSaysEndText,
+    SWAP_MS,
+    applySwap,
+    swapText,
+    pickText,
+    wheresDotEndText,
 } from './games-logic.js';
 
 const HAND_ICON = { rock: '✊', paper: '✋', scissors: '✌️' };
@@ -22,6 +40,8 @@ const RESULT_TEXT = {
     push: 'PUSH',
     blackjack: 'BLACKJACK!',
 };
+
+const prefersReducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
 const STORE_KEY = 'dot.games.v1';
 // The session clock starts on the backend slightly after Date.now() here.
@@ -97,6 +117,7 @@ export class GamesUI {
 
     setScreen(title, withBack) {
         this.clearTimer();
+        this.screenId = (this.screenId || 0) + 1;
         this.title.textContent = title;
         this.backBtn.classList.toggle('hidden', !withBack);
         this.body.innerHTML = '';
@@ -128,6 +149,68 @@ export class GamesUI {
         }
     }
 
+    // ---------- Games whose answer stays in Rust ----------
+    // Every move goes through game_step and Rust decides the coins, so these
+    // reports carry no outcome.
+
+    // True while the screen that asked is still shown.
+    liveCheck() {
+        const id = this.screenId;
+        return () => id === this.screenId && !this.overlay.classList.contains('hidden');
+    }
+
+    // Resolves after `ms`; never resolves if the screen changes first.
+    wait(ms) {
+        return new Promise((resolve) => {
+            this.timer = setTimeout(() => {
+                this.timer = null;
+                resolve();
+            }, ms);
+        });
+    }
+
+    // Resolves to { token, startedAt, result } with the first look, or null.
+    async play(game) {
+        const startedAt = Date.now();
+        try {
+            const token = await this.api.startGame(game);
+            const result = await this.api.gameStep(token, { type: 'look' });
+            return { token, startedAt, result };
+        } catch (e) {
+            console.error('Failed to start game:', e);
+            return null;
+        }
+    }
+
+    // Resolves to the StepResult, or null when Rust refused the move.
+    async move(play, input) {
+        try {
+            return await this.api.gameStep(play.token, input);
+        } catch (e) {
+            console.error('Game move refused:', e);
+            return null;
+        }
+    }
+
+    // Reports a finished game. Resolves to the RewardResult, or null when refused.
+    async settle(play, game, result) {
+        try {
+            const wait = minPlayMs(game, result.moves) + REPORT_MARGIN_MS - (Date.now() - play.startedAt);
+            if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+            const r = await this.api.reportGameResult(play.token, game, 'done', null);
+            this.onReward(r);
+            return r;
+        } catch (e) {
+            console.error('Failed to report game result:', e);
+            return null;
+        }
+    }
+
+    // Shown when a game could not start; NEW GAME tries again.
+    showStartFailed(again) {
+        this.body.append(el('div', 'game-result', 'TRY AGAIN'), button('NEW GAME', again));
+    }
+
     bump(game, key) {
         const g = (this.record[game] = this.record[game] || {});
         g[key] = (g[key] || 0) + 1;
@@ -141,7 +224,374 @@ export class GamesUI {
         list.appendChild(button('JANKEN', () => this.showJanken(), 'game-menu-btn'));
         list.appendChild(button('MEMORY', () => this.showMemory(), 'game-menu-btn'));
         list.appendChild(button('BLACKJACK', () => this.showBlackjack(), 'game-menu-btn'));
+        list.appendChild(button('HIT & BLOW', () => this.showHitBlow(), 'game-menu-btn'));
+        list.appendChild(button('HIGH & LOW', () => this.showHighLow(), 'game-menu-btn'));
+        list.appendChild(button('DOT SAYS', () => this.showDotSays(), 'game-menu-btn'));
+        list.appendChild(button("WHERE'S DOT?", () => this.showWheresDot(), 'game-menu-btn'));
         this.body.appendChild(list);
+    }
+
+    // ---------- HIT & BLOW ----------
+    async showHitBlow() {
+        this.setScreen('HIT & BLOW', true);
+        const live = this.liveCheck();
+        const rec = (this.record.hit_blow = this.record.hit_blow || {});
+        const play = await this.play('hit_blow');
+        if (!live()) return;
+        if (!play) return this.showStartFailed(() => this.showHitBlow());
+
+        let typed = [];
+        let busy = false;
+        const slots = el('div', 'game-result hb-slots', '');
+        const history = el('div', 'hb-history');
+        const info = el('div', 'game-note', '');
+        const result = el('div', 'game-result', '');
+        const keypad = el('div', 'hb-keypad');
+        const controls = el('div', 'game-row');
+
+        const render = (view) => {
+            slots.textContent = view.answer ? view.answer.join(' ') : hitBlowSlots(typed);
+            history.innerHTML = '';
+            for (const row of view.guesses) history.appendChild(el('div', 'hb-row', hitBlowRowText(row)));
+            info.textContent = `LEFT ${view.left}  BEST ${rec.best ?? '-'}`;
+            for (const key of keypad.children) {
+                key.disabled = busy || !!view.answer || typed.includes(Number(key.dataset.digit));
+            }
+            ok.disabled = busy || !!view.answer || !canGuess(typed);
+            del.disabled = busy || !!view.answer || typed.length === 0;
+        };
+
+        let view = play.result.view;
+        for (let d = 0; d <= 9; d++) {
+            const key = button(String(d), () => {
+                typed = typeDigit(typed, d);
+                render(view);
+            }, 'game-btn hb-key');
+            key.dataset.digit = String(d);
+            keypad.appendChild(key);
+        }
+        const del = button('DEL', () => {
+            typed = typed.slice(0, -1);
+            render(view);
+        });
+        const ok = button('OK', async () => {
+            if (!canGuess(typed)) return;
+            busy = true;
+            render(view);
+            const r = await this.move(play, { type: 'guess', digits: typed });
+            if (!live()) return;
+            busy = false;
+            if (!r) {
+                result.textContent = 'TRY AGAIN';
+                render(view);
+                return;
+            }
+            typed = [];
+            view = r.view;
+            result.textContent = '';
+            render(view);
+            if (r.finished) finish(r);
+        });
+        controls.append(del, ok);
+
+        const finish = (r) => {
+            const base = view.solved ? `CLEAR! ${view.guesses.length} GUESSES` : 'OUT OF GUESSES';
+            result.textContent = base;
+            if (view.solved && (rec.best === undefined || view.guesses.length < rec.best)) {
+                rec.best = view.guesses.length;
+                saveRecord(this.record);
+            }
+            controls.innerHTML = '';
+            controls.appendChild(button('NEW GAME', () => this.showHitBlow()));
+            this.settle(play, 'hit_blow', r).then((reward) => {
+                if (live()) result.textContent = base + settleText(reward);
+            });
+        };
+
+        this.body.append(el('div', 'game-note', '3 DIGITS, NO REPEATS. H=SPOT B=DIGIT'), slots, history, keypad, controls, info, result);
+        render(view);
+    }
+
+    // ---------- HIGH & LOW ----------
+    async showHighLow() {
+        this.setScreen('HIGH & LOW', true);
+        const live = this.liveCheck();
+        const rec = (this.record.high_low = this.record.high_low || {});
+        const play = await this.play('high_low');
+        if (!live()) return;
+        if (!play) return this.showStartFailed(() => this.showHighLow());
+
+        let busy = false;
+        const card = el('div', 'bj-card hl-card', '');
+        const last = el('div', 'game-note', '');
+        const info = el('div', 'game-note', '');
+        const result = el('div', 'game-result', '');
+        const controls = el('div', 'game-row');
+
+        const render = (view) => {
+            card.textContent = cardText(view.card);
+            last.textContent = turnText(view.last);
+            info.textContent = `STREAK ${view.streak}  STOP +$${view.banked}  BEST ${rec.best ?? '-'}`;
+            for (const b of controls.children) b.disabled = busy || !!view.end;
+        };
+
+        const act = async (input) => {
+            busy = true;
+            render(view);
+            const r = await this.move(play, input);
+            if (!live()) return;
+            busy = false;
+            if (!r) {
+                result.textContent = 'TRY AGAIN';
+                render(view);
+                return;
+            }
+            view = r.view;
+            result.textContent = '';
+            render(view);
+            if (r.finished) finish(r);
+        };
+
+        const finish = (r) => {
+            const base = highLowEndText(view.end);
+            result.textContent = base;
+            if (view.end !== 'lost' && (rec.best === undefined || view.streak > rec.best)) {
+                rec.best = view.streak;
+                saveRecord(this.record);
+            }
+            controls.innerHTML = '';
+            controls.appendChild(button('NEW GAME', () => this.showHighLow()));
+            this.settle(play, 'high_low', r).then((reward) => {
+                if (live()) result.textContent = base + settleText(reward);
+            });
+        };
+
+        let view = play.result.view;
+        controls.append(
+            button('HIGH', () => act({ type: 'high' })),
+            button('LOW', () => act({ type: 'low' })),
+            button('STOP', () => act({ type: 'stop' })),
+        );
+        this.body.append(el('div', 'game-note', 'IS THE NEXT CARD HIGHER OR LOWER?'), card, last, info, controls, result);
+        render(view);
+    }
+
+    // ---------- DOT SAYS ----------
+    async showDotSays() {
+        this.setScreen('DOT SAYS', true);
+        const live = this.liveCheck();
+        const rec = (this.record.dot_says = this.record.dot_says || {});
+        const play = await this.play('dot_says');
+        if (!live()) return;
+        if (!play) return this.showStartFailed(() => this.showDotSays());
+
+        const reduced = prefersReducedMotion();
+        let view = play.result.view;
+        let taps = [];
+        let listening = false;
+
+        const status = el('div', 'game-note', '');
+        const order = el('div', 'game-result', '');
+        const grid = el('div', 'says-grid');
+        const info = el('div', 'game-note', '');
+        const result = el('div', 'game-result', '');
+        const controls = el('div', 'game-row');
+        const pads = [0, 1, 2, 3].map((pad) => {
+            const b = button(String(pad + 1), () => onTap(pad), 'says-pad');
+            grid.appendChild(b);
+            return b;
+        });
+
+        const setListening = (on) => {
+            listening = on;
+            for (const p of pads) p.disabled = !on;
+        };
+        const renderInfo = () => {
+            const progress = view.show.length > 0 ? `  ${taps.length}/${view.show.length}` : '';
+            info.textContent = `ROUND ${view.round}${progress}  BEST ${rec.best ?? '-'}`;
+        };
+
+        // Shows this round's order, then lets the player repeat it.
+        const showRound = async () => {
+            taps = [];
+            setListening(false);
+            status.textContent = 'WATCH';
+            result.textContent = '';
+            renderInfo();
+            await this.wait(600);
+            if (reduced) {
+                order.textContent = orderText(view.show);
+                await this.wait(revealMs(view.show.length));
+                order.textContent = '';
+            } else {
+                let clock = 0;
+                for (const light of lightSchedule(view.show)) {
+                    await this.wait(light.onAt - clock);
+                    pads[light.pad].classList.add('lit');
+                    await this.wait(light.offAt - light.onAt);
+                    pads[light.pad].classList.remove('lit');
+                    clock = light.offAt;
+                }
+            }
+            status.textContent = 'YOUR TURN';
+            setListening(true);
+        };
+
+        const onTap = async (pad) => {
+            if (!listening) return;
+            taps = [...taps, pad];
+            renderInfo();
+            if (judgeTaps(view.show, taps) === 'more') return;
+            setListening(false);
+            const r = await this.move(play, { type: 'say', order: taps });
+            if (!live()) return;
+            if (!r) {
+                result.textContent = 'TRY AGAIN';
+                showRound();
+                return;
+            }
+            view = r.view;
+            if (r.finished) return finish(r);
+            showRound();
+        };
+
+        const finish = (r) => {
+            const base = dotSaysEndText(view);
+            status.textContent = '';
+            result.textContent = base;
+            renderInfo();
+            if (rec.best === undefined || view.cleared > rec.best) {
+                rec.best = view.cleared;
+                saveRecord(this.record);
+            }
+            controls.appendChild(button('NEW GAME', () => this.showDotSays()));
+            this.settle(play, 'dot_says', r).then((reward) => {
+                if (live()) result.textContent = base + settleText(reward);
+            });
+        };
+
+        this.body.append(el('div', 'game-note', 'REPEAT THE ORDER DOT SHOWS'), status, order, grid, info, result, controls);
+        showRound();
+    }
+
+    // ---------- WHERE'S DOT? ----------
+    async showWheresDot() {
+        this.setScreen("WHERE'S DOT?", true);
+        const live = this.liveCheck();
+        const rec = (this.record.wheres_dot = this.record.wheres_dot || {});
+        const play = await this.play('wheres_dot');
+        if (!live()) return;
+        if (!play) return this.showStartFailed(() => this.showWheresDot());
+
+        // With reduced motion the cups stay put and each swap is read as text, one tap at a time.
+        const reduced = prefersReducedMotion();
+        let view = play.result.view;
+        let slots = [0, 1, 2]; // slots[cup] = position
+        let picking = false;
+
+        const status = el('div', 'game-note', '');
+        const table = el('div', 'cups-table');
+        const info = el('div', 'game-note', '');
+        const result = el('div', 'game-result', '');
+        const controls = el('div', 'game-row');
+        if (reduced) table.classList.add('still');
+        const cups = [0, 1, 2].map((cup) => {
+            const b = button(reduced ? String(cup + 1) : '', () => onPick(cup), 'cup');
+            table.appendChild(b);
+            return b;
+        });
+
+        const place = () => cups.forEach((c, cup) => {
+            c.style.transform = `translateX(${slots[cup] * 84}px)`;
+        });
+        // Shows dot under the cup at `position`, or covers every cup when null.
+        const reveal = (position) => cups.forEach((c, cup) => {
+            c.classList.toggle('open', slots[cup] === position);
+        });
+        const setPicking = (on) => {
+            picking = on;
+            for (const c of cups) c.disabled = !on;
+        };
+        const renderInfo = () => {
+            info.textContent = `ROUND ${view.round}/3  RIGHT ${view.correct}  BEST ${rec.best ?? '-'}`;
+        };
+        // Resolves when NEXT is tapped.
+        const nextTap = () => new Promise((resolve) => {
+            controls.innerHTML = '';
+            controls.appendChild(button('NEXT', () => {
+                controls.innerHTML = '';
+                resolve();
+            }));
+        });
+
+        const showRound = async () => {
+            setPicking(false);
+            // Back to the start without gliding
+            slots = [0, 1, 2];
+            table.classList.add('still');
+            place();
+            void table.offsetWidth;
+            if (!reduced) table.classList.remove('still');
+            renderInfo();
+            status.textContent = 'DOT HIDES HERE';
+            reveal(view.start);
+            await this.wait(1400);
+            reveal(null);
+            status.textContent = 'WATCH THE CUPS';
+            await this.wait(600);
+            for (const [i, swap] of view.swaps.entries()) {
+                if (reduced) {
+                    status.textContent = swapText(swap, i, view.swaps.length);
+                    await nextTap();
+                    if (!live()) return;
+                } else {
+                    slots = applySwap(slots, swap);
+                    place();
+                    await this.wait(SWAP_MS);
+                }
+            }
+            status.textContent = "WHERE'S DOT?";
+            setPicking(true);
+        };
+
+        const onPick = async (cup) => {
+            if (!picking) return;
+            setPicking(false);
+            const r = await this.move(play, { type: 'pick', cup: slots[cup] });
+            if (!live()) return;
+            if (!r) {
+                result.textContent = 'TRY AGAIN';
+                setPicking(true);
+                return;
+            }
+            view = r.view;
+            const pick = view.picks[view.picks.length - 1];
+            reveal(pick.dot);
+            result.textContent = pickText(pick);
+            renderInfo();
+            if (r.finished) return finish(r);
+            await this.wait(1400);
+            result.textContent = '';
+            showRound();
+        };
+
+        const finish = (r) => {
+            const base = wheresDotEndText(view);
+            status.textContent = '';
+            result.textContent = base;
+            if (rec.best === undefined || view.correct > rec.best) {
+                rec.best = view.correct;
+                saveRecord(this.record);
+            }
+            controls.innerHTML = '';
+            controls.appendChild(button('NEW GAME', () => this.showWheresDot()));
+            this.settle(play, 'wheres_dot', r).then((reward) => {
+                if (live()) result.textContent = base + settleText(reward);
+            });
+        };
+
+        this.body.append(el('div', 'game-note', 'FOLLOW THE CUP DOT HIDES UNDER'), status, table, info, result, controls);
+        showRound();
     }
 
     // ---------- Janken ----------

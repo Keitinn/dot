@@ -5,6 +5,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use rand::{rngs::StdRng, SeedableRng};
+
+use crate::minigames::{GameState, StepInput, StepResult};
 use crate::pet::{economy, GameStats};
 
 /// Oldest pending sessions are dropped beyond this many.
@@ -23,6 +26,18 @@ pub fn min_play_time(game: &str, moves: Option<u32>) -> Option<Duration> {
             let by_moves = Duration::from_millis(500) * moves.unwrap_or(0);
             Some(by_moves.max(Duration::from_secs(4)))
         }
+        // A second per guess: 3 digits to tap, then OK
+        "hit_blow" => Some((Duration::from_secs(1) * moves.unwrap_or(0)).max(Duration::from_secs(3))),
+        // Half a second per call, so a script cannot rush the deck
+        "high_low" => Some((Duration::from_millis(500) * moves.unwrap_or(0)).max(Duration::from_secs(2))),
+        // Rounds cleared r showed 1 + 2 + ... + r lights, 0.6 s each
+        "dot_says" => {
+            let r = moves.unwrap_or(0);
+            let lights = r * (r + 1) / 2;
+            Some((Duration::from_millis(600) * lights).max(Duration::from_secs(2)))
+        }
+        // Half a second per swap shown (12-18 over 3 rounds)
+        "wheres_dot" => Some((Duration::from_millis(500) * moves.unwrap_or(0)).max(Duration::from_secs(6))),
         _ => None,
     }
 }
@@ -30,16 +45,30 @@ pub fn min_play_time(game: &str, moves: Option<u32>) -> Option<Duration> {
 struct PendingGame {
     game: String,
     started_at: Instant,
+    /// For a game played through `step`: its answer and progress
+    state: Option<GameState>,
 }
 
-#[derive(Default)]
 pub struct GameSessions {
     pending: HashMap<String, PendingGame>,
+    /// Deals the answers of the games played through `step`
+    rng: StdRng,
+}
+
+impl Default for GameSessions {
+    fn default() -> Self {
+        Self { pending: HashMap::new(), rng: StdRng::from_os_rng() }
+    }
 }
 
 impl GameSessions {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The same seed deals the same answers, so tests can replay a game.
+    pub fn with_seed(seed: u64) -> Self {
+        Self { pending: HashMap::new(), rng: StdRng::seed_from_u64(seed) }
     }
 
     pub fn pending_count(&self) -> usize {
@@ -66,15 +95,36 @@ impl GameSessions {
         }
 
         let token = uuid::Uuid::new_v4().to_string();
+        let state = GameState::new(game, &mut self.rng);
         self.pending.insert(
             token.clone(),
-            PendingGame { game: game.to_string(), started_at: now },
+            PendingGame { game: game.to_string(), started_at: now, state },
         );
         Ok(token)
     }
 
+    /// Plays one move of a game that keeps its answer here. The token stays
+    /// open until `finish`.
+    pub fn step(&mut self, token: &str, input: &StepInput, now: Instant) -> Result<StepResult, String> {
+        let session = self
+            .pending
+            .get_mut(token)
+            .ok_or_else(|| "unknown or used game token".to_string())?;
+        if now.saturating_duration_since(session.started_at) > SESSION_TTL {
+            self.pending.remove(token);
+            return Err("game token expired".to_string());
+        }
+        let state = session
+            .state
+            .as_mut()
+            .ok_or_else(|| format!("{} has no steps", session.game))?;
+        state.step(input)
+    }
+
     /// Consumes the token (whether or not the check passes) and checks the report against it.
-    pub fn finish(&mut self, token: &str, game: &str, moves: Option<u32>, now: Instant) -> Result<(), String> {
+    /// Returns the coins for a game that keeps its answer here, decided by its
+    /// state; `None` for a game whose reported outcome sets the coins.
+    pub fn finish(&mut self, token: &str, game: &str, moves: Option<u32>, now: Instant) -> Result<Option<u64>, String> {
         let session = self
             .pending
             .remove(token)
@@ -86,6 +136,14 @@ impl GameSessions {
         if session.game != game {
             return Err(format!("token was issued for {}, not {game}", session.game));
         }
+        // The reported moves are ignored here: the state counted them
+        let (moves, reward) = match &session.state {
+            Some(state) => {
+                let settled = state.settled().ok_or_else(|| format!("{game} is not over yet"))?;
+                (Some(settled.moves), Some(settled.reward))
+            }
+            None => (moves, None),
+        };
         if game == "memory" && moves.unwrap_or(0) < MEMORY_MIN_MOVES {
             return Err(format!("memory needs at least {MEMORY_MIN_MOVES} moves"));
         }
@@ -93,7 +151,7 @@ impl GameSessions {
         if played < min {
             return Err("game finished too quickly".to_string());
         }
-        Ok(())
+        Ok(reward)
     }
 }
 
@@ -105,6 +163,8 @@ pub struct GameReward {
 }
 
 /// Validates a finished game and pays its coins, up to the daily cap.
+/// For a game played through `GameSessions::step`, `outcome` and `moves` are
+/// ignored: its state decides the coins.
 /// `today` is the local date as `YYYY-MM-DD`.
 #[allow(clippy::too_many_arguments)]
 pub fn claim_reward(
@@ -117,8 +177,10 @@ pub fn claim_reward(
     now: Instant,
     today: &str,
 ) -> Result<GameReward, String> {
-    sessions.finish(token, game, moves, now)?;
-    let reward = economy::game_reward(game, outcome, moves)?;
+    let reward = match sessions.finish(token, game, moves, now)? {
+        Some(decided) => decided,
+        None => economy::game_reward(game, outcome, moves)?,
+    };
     let earned = stats.add_game_coins(reward, today, economy::DAILY_GAME_COIN_CAP);
     Ok(GameReward { earned, capped: earned < reward })
 }
@@ -126,6 +188,11 @@ pub fn claim_reward(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::minigames::dot_says::DotSays;
+    use crate::minigames::high_low::{Card, HighLow};
+    use crate::minigames::hit_blow::HitBlow;
+    use crate::minigames::wheres_dot::WheresDot;
+    use crate::minigames::{StepInput, View as MiniView};
     use crate::pet::economy::DAILY_GAME_COIN_CAP;
 
     const DAY: &str = "2026-10-14";
@@ -280,12 +347,481 @@ mod tests {
     }
 
     #[test]
+    fn a_step_needs_a_live_token() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        for token in ["", "not-a-token"] {
+            assert!(sessions.step(token, &StepInput::Look, t0).is_err(), "token {token:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn games_the_ui_plays_on_its_own_have_no_steps() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = sessions.start("janken", t0).unwrap();
+
+        assert!(sessions.step(&token, &StepInput::Look, t0 + secs(1)).is_err());
+        // The token still pays as before
+        let mut stats = GameStats::new();
+        let r = claim(&mut sessions, &mut stats, &token, "janken", "win", None, t0 + secs(2)).unwrap();
+        assert_eq!(r.earned, 2);
+    }
+
+    /// Starts `game` and swaps in a state with a known answer.
+    fn start_with(sessions: &mut GameSessions, game: &str, state: GameState, t0: Instant) -> String {
+        let token = sessions.start(game, t0).unwrap();
+        sessions.pending.get_mut(&token).unwrap().state = Some(state);
+        token
+    }
+
+    fn guess(digits: [u8; 3]) -> StepInput {
+        StepInput::Guess { digits: digits.to_vec() }
+    }
+
+    fn hit_blow(sessions: &mut GameSessions, answer: [u8; 3], t0: Instant) -> String {
+        start_with(sessions, "hit_blow", GameState::HitBlow(HitBlow::with_answer(answer)), t0)
+    }
+
+    #[test]
+    fn hit_blow_pays_by_its_own_count_whatever_the_ui_reports() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+        sessions.step(&token, &guess([4, 5, 6]), t0 + secs(1)).unwrap();
+        let last = sessions.step(&token, &guess([1, 2, 3]), t0 + secs(2)).unwrap();
+        assert!(last.finished);
+        assert_eq!((last.moves, last.reward), (Some(2), Some(7)));
+
+        // The UI claims a first-try clear; the state says 2 guesses
+        let r = claim(&mut sessions, &mut stats, &token, "hit_blow", "clear", Some(1), t0 + secs(5)).unwrap();
+
+        assert_eq!(r, GameReward { earned: 7, capped: false });
+        assert_eq!(stats.coins, 7);
+    }
+
+    #[test]
+    fn hit_blow_unfinished_pays_nothing_and_uses_up_the_token() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+        sessions.step(&token, &guess([4, 5, 6]), t0 + secs(1)).unwrap();
+
+        assert!(claim(&mut sessions, &mut stats, &token, "hit_blow", "clear", Some(1), t0 + secs(30)).is_err());
+        assert_eq!(stats.coins, 0);
+        assert!(sessions.step(&token, &guess([1, 2, 3]), t0 + secs(31)).is_err());
+        assert!(claim(&mut sessions, &mut stats, &token, "hit_blow", "clear", None, t0 + secs(32)).is_err());
+    }
+
+    #[test]
+    fn hit_blow_failed_game_pays_nothing() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+        for _ in 0..8 {
+            sessions.step(&token, &guess([4, 5, 6]), t0).unwrap();
+        }
+
+        let r = claim(&mut sessions, &mut stats, &token, "hit_blow", "clear", Some(1), t0 + secs(8)).unwrap();
+
+        assert_eq!(r, GameReward { earned: 0, capped: false });
+    }
+
+    #[test]
+    fn hit_blow_bad_guess_is_refused_without_using_a_try() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+
+        assert!(sessions.step(&token, &guess([1, 1, 2]), t0).is_err());
+        assert!(sessions.step(&token, &StepInput::Guess { digits: vec![1, 2] }, t0).is_err());
+
+        let look = sessions.step(&token, &StepInput::Look, t0).unwrap();
+        let MiniView::HitBlow(view) = look.view else { panic!("not hit & blow") };
+        assert_eq!(view.left, 8);
+    }
+
+    #[test]
+    fn hit_blow_never_shows_the_answer_before_the_end() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = hit_blow(&mut sessions, [7, 8, 9], t0);
+        for input in [StepInput::Look, guess([1, 2, 3]), guess([7, 9, 8])] {
+            let json = serde_json::to_value(sessions.step(&token, &input, t0).unwrap()).unwrap();
+            assert_eq!(json["view"]["answer"], serde_json::Value::Null, "{json}");
+            assert_eq!(json["finished"], false);
+            assert_eq!(json["reward"], serde_json::Value::Null);
+        }
+        let end = serde_json::to_value(sessions.step(&token, &guess([7, 8, 9]), t0).unwrap()).unwrap();
+        assert_eq!(end["view"]["answer"], serde_json::json!([7, 8, 9]));
+        assert!(sessions.step(&token, &guess([7, 8, 9]), t0).is_err(), "a move after the end");
+    }
+
+    #[test]
+    fn hit_blow_is_replayed_by_the_same_seed() {
+        let t0 = Instant::now();
+        let play = |seed| {
+            let mut sessions = GameSessions::with_seed(seed);
+            let token = sessions.start("hit_blow", t0).unwrap();
+            [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 0, 1]]
+                .map(|d| sessions.step(&token, &guess(d), t0).unwrap())
+        };
+        assert_eq!(play(3), play(3));
+    }
+
+    #[test]
+    fn hit_blow_must_take_a_second_per_guess() {
+        let t0 = Instant::now();
+        // Solved on the 1st guess: 3 s floor; on the 5th: 5 x 1 s
+        for (wrong, min) in [(0, secs(3)), (4, secs(5))] {
+            let mut sessions = GameSessions::with_seed(1);
+            let mut stats = GameStats::new();
+            let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+            for _ in 0..wrong {
+                sessions.step(&token, &guess([4, 5, 6]), t0).unwrap();
+            }
+            sessions.step(&token, &guess([1, 2, 3]), t0).unwrap();
+            let early = min - Duration::from_millis(1);
+            assert!(claim(&mut sessions, &mut stats, &token, "hit_blow", "x", None, t0 + early).is_err());
+
+            let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+            for _ in 0..wrong {
+                sessions.step(&token, &guess([4, 5, 6]), t0).unwrap();
+            }
+            sessions.step(&token, &guess([1, 2, 3]), t0).unwrap();
+            assert!(claim(&mut sessions, &mut stats, &token, "hit_blow", "x", None, t0 + min).is_ok());
+        }
+    }
+
+    #[test]
+    fn hit_blow_near_the_cap_pays_only_the_remainder() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        stats.game_coins_today = 28;
+        stats.game_coins_date = Some(DAY.to_string());
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+        sessions.step(&token, &guess([1, 2, 3]), t0).unwrap();
+
+        let r = claim(&mut sessions, &mut stats, &token, "hit_blow", "x", None, t0 + secs(3)).unwrap();
+
+        assert_eq!(r, GameReward { earned: 2, capped: true });
+        assert_eq!(stats.game_coins_today, DAILY_GAME_COIN_CAP);
+    }
+
+    #[test]
+    fn a_used_token_has_no_more_steps() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = hit_blow(&mut sessions, [1, 2, 3], t0);
+        sessions.step(&token, &guess([1, 2, 3]), t0).unwrap();
+        claim(&mut sessions, &mut stats, &token, "hit_blow", "x", None, t0 + secs(3)).unwrap();
+
+        assert!(sessions.step(&token, &StepInput::Look, t0 + secs(4)).is_err());
+        assert!(claim(&mut sessions, &mut stats, &token, "hit_blow", "x", None, t0 + secs(5)).is_err());
+        assert_eq!(stats.coins, 8);
+    }
+
+    #[test]
+    fn an_expired_token_has_no_more_steps() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = sessions.start("hit_blow", t0).unwrap();
+        assert!(sessions.step(&token, &StepInput::Look, t0 + SESSION_TTL + secs(1)).is_err());
+        assert_eq!(sessions.pending_count(), 0);
+    }
+
+    fn high_low(sessions: &mut GameSessions, ranks: &[u8], t0: Instant) -> String {
+        let order = ranks.iter().map(|&rank| Card { rank, suit: 1 }).collect();
+        start_with(sessions, "high_low", GameState::HighLow(HighLow::with_order(order)), t0)
+    }
+
+    #[test]
+    fn high_low_stop_pays_the_streak_whatever_the_ui_reports() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = high_low(&mut sessions, &[5, 9, 2, 2, 11], t0);
+        sessions.step(&token, &StepInput::High, t0).unwrap();
+        sessions.step(&token, &StepInput::Low, t0).unwrap();
+        let tie = sessions.step(&token, &StepInput::High, t0).unwrap();
+        assert!(!tie.finished);
+        let stop = sessions.step(&token, &StepInput::Stop, t0).unwrap();
+        assert_eq!((stop.finished, stop.moves, stop.reward), (true, Some(3), Some(2)));
+
+        let r = claim(&mut sessions, &mut stats, &token, "high_low", "win", Some(9), t0 + secs(2)).unwrap();
+
+        assert_eq!(r, GameReward { earned: 2, capped: false });
+    }
+
+    #[test]
+    fn high_low_miss_pays_nothing() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = high_low(&mut sessions, &[5, 9, 12, 1], t0);
+        sessions.step(&token, &StepInput::High, t0).unwrap();
+        sessions.step(&token, &StepInput::High, t0).unwrap();
+        let miss = sessions.step(&token, &StepInput::High, t0).unwrap();
+        assert!(miss.finished);
+        assert!(sessions.step(&token, &StepInput::Stop, t0).is_err(), "STOP after a miss");
+
+        let r = claim(&mut sessions, &mut stats, &token, "high_low", "win", None, t0 + secs(3)).unwrap();
+
+        assert_eq!(r.earned, 0);
+    }
+
+    #[test]
+    fn high_low_refuses_another_games_move() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = high_low(&mut sessions, &[5, 9, 2], t0);
+        assert!(sessions.step(&token, &guess([1, 2, 3]), t0).is_err());
+        let look = sessions.step(&token, &StepInput::Look, t0).unwrap();
+        let MiniView::HighLow(view) = look.view else { panic!("not high & low") };
+        assert_eq!((view.left, view.streak), (2, 0));
+    }
+
+    #[test]
+    fn high_low_must_take_half_a_second_per_call() {
+        let t0 = Instant::now();
+        // 6 calls: 3 s; STOP at once: the 2 s floor
+        for (ranks, calls, min) in [(&[1u8, 2, 2, 2, 2, 2, 3][..], 6, secs(3)), (&[1, 2][..], 0, secs(2))] {
+            for (elapsed, ok) in [(min - Duration::from_millis(1), false), (min, true)] {
+                let mut sessions = GameSessions::with_seed(1);
+                let mut stats = GameStats::new();
+                let token = high_low(&mut sessions, ranks, t0);
+                for _ in 0..calls {
+                    sessions.step(&token, &StepInput::High, t0).unwrap();
+                }
+                if calls == 0 {
+                    sessions.step(&token, &StepInput::Stop, t0).unwrap();
+                }
+                let r = claim(&mut sessions, &mut stats, &token, "high_low", "x", None, t0 + elapsed);
+                assert_eq!(r.is_ok(), ok, "{calls} calls after {elapsed:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn high_low_is_replayed_by_the_same_seed() {
+        let t0 = Instant::now();
+        let play = |seed| {
+            let mut sessions = GameSessions::with_seed(seed);
+            let token = sessions.start("high_low", t0).unwrap();
+            let first = sessions.step(&token, &StepInput::Look, t0).unwrap();
+            let next = sessions.step(&token, &StepInput::High, t0).unwrap();
+            (first, next)
+        };
+        assert_eq!(play(11), play(11));
+    }
+
+    const SAYS: [u8; 8] = [1, 3, 0, 2, 2, 1, 0, 3];
+
+    fn dot_says(sessions: &mut GameSessions, t0: Instant) -> String {
+        start_with(sessions, "dot_says", GameState::DotSays(DotSays::with_sequence(SAYS.to_vec())), t0)
+    }
+
+    fn say(order: &[u8]) -> StepInput {
+        StepInput::Say { order: order.to_vec() }
+    }
+
+    #[test]
+    fn dot_says_shows_each_round_and_checks_the_reply() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = dot_says(&mut sessions, t0);
+        for r in 1..=5 {
+            let look = sessions.step(&token, &StepInput::Look, t0).unwrap();
+            let MiniView::DotSays(view) = look.view else { panic!("not dot says") };
+            // Only this round's order is shown, never the next pad
+            assert_eq!(view.show, SAYS[..r].to_vec());
+            sessions.step(&token, &say(&SAYS[..r]), t0).unwrap();
+        }
+        let miss = sessions.step(&token, &say(&[0]), t0).unwrap();
+        assert_eq!((miss.finished, miss.moves, miss.reward), (true, Some(5), Some(3)));
+
+        // The UI claims all 8 rounds
+        let r = claim(&mut sessions, &mut stats, &token, "dot_says", "clear", Some(8), t0 + secs(18)).unwrap();
+
+        assert_eq!(r, GameReward { earned: 3, capped: false });
+    }
+
+    #[test]
+    fn dot_says_refuses_a_half_reply_and_another_games_move() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = dot_says(&mut sessions, t0);
+        sessions.step(&token, &say(&SAYS[..1]), t0).unwrap();
+
+        assert!(sessions.step(&token, &say(&SAYS[..1]), t0).is_err(), "half of round 2");
+        assert!(sessions.step(&token, &StepInput::High, t0).is_err());
+        let look = sessions.step(&token, &StepInput::Look, t0).unwrap();
+        assert!(!look.finished);
+        let MiniView::DotSays(view) = look.view else { panic!("not dot says") };
+        assert_eq!((view.round, view.cleared), (2, 1));
+    }
+
+    #[test]
+    fn dot_says_must_take_the_time_its_lights_take() {
+        let t0 = Instant::now();
+        // 0 rounds: the 2 s floor; 5 rounds: 1+2+3+4+5 lights x 0.6 s = 9 s
+        for (rounds, min) in [(0usize, secs(2)), (5, secs(9))] {
+            for (elapsed, ok) in [(min - Duration::from_millis(1), false), (min, true)] {
+                let mut sessions = GameSessions::with_seed(1);
+                let mut stats = GameStats::new();
+                let token = dot_says(&mut sessions, t0);
+                for r in 1..=rounds {
+                    sessions.step(&token, &say(&SAYS[..r]), t0).unwrap();
+                }
+                sessions.step(&token, &say(&[(SAYS[0] + 1) % 4]), t0).unwrap();
+                let r = claim(&mut sessions, &mut stats, &token, "dot_says", "x", None, t0 + elapsed);
+                assert_eq!(r.is_ok(), ok, "{rounds} rounds after {elapsed:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn dot_says_is_replayed_by_the_same_seed() {
+        let t0 = Instant::now();
+        let first_round = |seed| {
+            let mut sessions = GameSessions::with_seed(seed);
+            let token = sessions.start("dot_says", t0).unwrap();
+            sessions.step(&token, &StepInput::Look, t0).unwrap()
+        };
+        assert_eq!(first_round(21), first_round(21));
+    }
+
+    // Dot ends under cup 1, then 0, then 2; 12 swaps in all
+    fn wheres_dot(sessions: &mut GameSessions, t0: Instant) -> String {
+        let game = WheresDot::with_rounds([
+            (0, &[[0, 1], [0, 2], [1, 2], [1, 2]]),
+            (2, &[[0, 2], [1, 2], [0, 1], [0, 1]]),
+            (1, &[[1, 2], [0, 1], [0, 1], [0, 1]]),
+        ]);
+        start_with(sessions, "wheres_dot", GameState::WheresDot(game), t0)
+    }
+
+    fn pick(cup: u8) -> StepInput {
+        StepInput::Pick { cup }
+    }
+
+    #[test]
+    fn wheres_dot_shows_swaps_per_round_and_judges_picks() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = wheres_dot(&mut sessions, t0);
+        let look = sessions.step(&token, &StepInput::Look, t0).unwrap();
+        let MiniView::WheresDot(view) = look.view else { panic!("not where's dot") };
+        assert_eq!((view.start, view.swaps.len()), (Some(0), 4));
+
+        let first = sessions.step(&token, &pick(1), t0).unwrap();
+        let MiniView::WheresDot(view) = first.view else { panic!("not where's dot") };
+        assert!(view.picks[0].correct);
+        assert_eq!((view.round, view.start), (2, Some(2)));
+        sessions.step(&token, &pick(0), t0).unwrap();
+        let last = sessions.step(&token, &pick(2), t0).unwrap();
+        assert_eq!((last.finished, last.moves, last.reward), (true, Some(12), Some(4)));
+
+        // The UI claims nothing was right
+        let r = claim(&mut sessions, &mut stats, &token, "wheres_dot", "lose", Some(0), t0 + secs(6)).unwrap();
+
+        assert_eq!(r, GameReward { earned: 4, capped: false });
+    }
+
+    #[test]
+    fn wheres_dot_never_sends_where_dot_ends_before_the_pick() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = wheres_dot(&mut sessions, t0);
+        for input in [StepInput::Look, pick(2), pick(0)] {
+            let json = serde_json::to_value(sessions.step(&token, &input, t0).unwrap()).unwrap();
+            let round = json["view"]["round"].as_u64().unwrap() as usize;
+            // Picks hold only the rounds already played
+            assert_eq!(json["view"]["picks"].as_array().unwrap().len(), round - 1, "{json}");
+            assert_eq!(json["reward"], serde_json::Value::Null);
+        }
+    }
+
+    #[test]
+    fn wheres_dot_refuses_a_bad_cup_and_an_early_report() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = wheres_dot(&mut sessions, t0);
+        assert!(sessions.step(&token, &pick(3), t0).is_err());
+        assert!(sessions.step(&token, &say(&[0]), t0).is_err());
+        sessions.step(&token, &pick(1), t0).unwrap();
+
+        assert!(claim(&mut sessions, &mut stats, &token, "wheres_dot", "win", Some(3), t0 + secs(60)).is_err());
+        assert_eq!(stats.coins, 0);
+    }
+
+    #[test]
+    fn wheres_dot_must_take_half_a_second_per_swap() {
+        let t0 = Instant::now();
+        // 12 swaps x 0.5 s = 6 s
+        for (elapsed, ok) in [(Duration::from_millis(5_999), false), (secs(6), true)] {
+            let mut sessions = GameSessions::with_seed(1);
+            let mut stats = GameStats::new();
+            let token = wheres_dot(&mut sessions, t0);
+            for cup in [0, 0, 0] {
+                sessions.step(&token, &pick(cup), t0).unwrap();
+            }
+            let r = claim(&mut sessions, &mut stats, &token, "wheres_dot", "x", None, t0 + elapsed);
+            assert_eq!(r.is_ok(), ok, "after {elapsed:?}");
+        }
+    }
+
+    #[test]
+    fn wheres_dot_is_replayed_by_the_same_seed() {
+        let t0 = Instant::now();
+        let play = |seed| {
+            let mut sessions = GameSessions::with_seed(seed);
+            let token = sessions.start("wheres_dot", t0).unwrap();
+            [StepInput::Look, pick(0), pick(1), pick(2)].map(|input| sessions.step(&token, &input, t0).unwrap())
+        };
+        assert_eq!(play(31), play(31));
+    }
+
+    #[test]
+    fn one_seeded_session_store_deals_every_new_game() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        for game in ["hit_blow", "high_low", "dot_says", "wheres_dot"] {
+            let token = sessions.start(game, t0).unwrap();
+            let look = sessions.step(&token, &StepInput::Look, t0).unwrap();
+            assert!(!look.finished, "{game}");
+            assert_eq!(serde_json::to_value(&look).unwrap()["view"]["game"], game);
+        }
+    }
+
+    #[test]
     fn minimum_play_times() {
         assert_eq!(min_play_time("janken", None), Some(secs(1)));
         assert_eq!(min_play_time("blackjack", None), Some(secs(3)));
         assert_eq!(min_play_time("memory", Some(4)), Some(secs(4)));
         assert_eq!(min_play_time("memory", Some(8)), Some(secs(4)));
         assert_eq!(min_play_time("memory", Some(9)), Some(Duration::from_millis(4_500)));
+        assert_eq!(min_play_time("hit_blow", Some(1)), Some(secs(3)));
+        assert_eq!(min_play_time("hit_blow", Some(3)), Some(secs(3)));
+        assert_eq!(min_play_time("hit_blow", Some(8)), Some(secs(8)));
+        assert_eq!(min_play_time("high_low", Some(0)), Some(secs(2)));
+        assert_eq!(min_play_time("high_low", Some(4)), Some(secs(2)));
+        assert_eq!(min_play_time("high_low", Some(9)), Some(Duration::from_millis(4_500)));
+        assert_eq!(min_play_time("dot_says", Some(0)), Some(secs(2)));
+        assert_eq!(min_play_time("dot_says", Some(1)), Some(secs(2)));
+        assert_eq!(min_play_time("dot_says", Some(3)), Some(Duration::from_millis(3_600)));
+        assert_eq!(min_play_time("dot_says", Some(8)), Some(Duration::from_millis(21_600)));
+        assert_eq!(min_play_time("wheres_dot", Some(12)), Some(secs(6)));
+        assert_eq!(min_play_time("wheres_dot", Some(15)), Some(Duration::from_millis(7_500)));
+        assert_eq!(min_play_time("wheres_dot", Some(18)), Some(secs(9)));
         assert_eq!(min_play_time("poker", None), None);
     }
 
