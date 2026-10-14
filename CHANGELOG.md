@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.2.0
 
 ### Added
 - 大人期コンパニオンの土台: 絆(Bond)を `companion.json` に保存し、1 日 1 回確定する(UI にはまだ出ない)
