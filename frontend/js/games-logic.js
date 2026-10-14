@@ -101,6 +101,26 @@ export function dealerPlay(dealer, deck) {
     return dealer;
 }
 
+/**
+ * Shortest time between start_game and the report that the backend accepts
+ * (mirrors min_play_time in backend/src/game_session.rs). 0 for unknown games.
+ */
+export function minPlayMs(game, moves = 0) {
+    switch (game) {
+        case 'janken': return 1000;
+        case 'blackjack': return 3000;
+        case 'memory': return Math.max(4000, 500 * (moves || 0));
+        default: return 0;
+    }
+}
+
+/** Suffix for a result line: coins earned, and DAILY LIMIT when the cap cut the reward. */
+export function rewardText(r) {
+    if (!r) return '';
+    const coins = r.earned > 0 ? ` +$${r.earned}` : '';
+    return coins + (r.capped ? ' DAILY LIMIT' : '');
+}
+
 /** Returns 'win' | 'lose' | 'push' | 'blackjack' from the player's point of view. */
 export function judgeBlackjack(player, dealer) {
     const p = handValue(player);

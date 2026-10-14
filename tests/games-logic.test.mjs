@@ -11,6 +11,8 @@ import {
     judgeBlackjack,
     createBlackjackDeck,
     SUITS,
+    minPlayMs,
+    rewardText,
 } from '../frontend/js/games-logic.js';
 
 const c = (rank, suit = '♠') => ({ rank, suit });
@@ -103,4 +105,20 @@ test('blackjack: deck is 52 unique cards', () => {
     const deck = createBlackjackDeck();
     assert.equal(deck.length, 52);
     assert.equal(new Set(deck.map((x) => x.rank + x.suit)).size, 52);
+});
+
+test('reward: minimum play time matches the backend (game_session.rs)', () => {
+    assert.equal(minPlayMs('janken'), 1000);
+    assert.equal(minPlayMs('blackjack'), 3000);
+    assert.equal(minPlayMs('memory', 4), 4000); // 4 s floor
+    assert.equal(minPlayMs('memory', 9), 4500); // 0.5 s per move
+    assert.equal(minPlayMs('poker'), 0);
+});
+
+test('reward: text shows coins and the daily limit', () => {
+    assert.equal(rewardText({ earned: 5, capped: false }), ' +$5');
+    assert.equal(rewardText({ earned: 0, capped: false }), '');
+    assert.equal(rewardText({ earned: 2, capped: true }), ' +$2 DAILY LIMIT');
+    assert.equal(rewardText({ earned: 0, capped: true }), ' DAILY LIMIT');
+    assert.equal(rewardText(null), '');
 });
