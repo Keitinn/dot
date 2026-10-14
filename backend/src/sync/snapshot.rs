@@ -294,7 +294,7 @@ fn join_day(a: DayCounters, b: DayCounters) -> DayCounters {
 }
 
 impl StreakLedger {
-    fn from_legacy(stats: &GameStats) -> Self {
+    pub(crate) fn from_legacy(stats: &GameStats) -> Self {
         let mut ledger = Self { longest: stats.longest_streak, ..Self::default() };
         let end = stats
             .last_care_date
@@ -322,7 +322,7 @@ impl StreakLedger {
         self.prune();
     }
 
-    fn absorb(&mut self, other: &StreakLedger) {
+    pub(crate) fn absorb(&mut self, other: &StreakLedger) {
         self.care_dates.extend(other.care_dates.iter().copied());
         self.prune();
         self.run = self.run.max(other.run);

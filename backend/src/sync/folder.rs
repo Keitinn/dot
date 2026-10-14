@@ -1,11 +1,11 @@
-//! The shared folder as stage 0 sees it: `devices/<device_id>.json`, one file
-//! per Mac. Stage 0 only reads and writes a folder it is given; choosing the
-//! folder and watching it come with #38.
+//! The shared folder: `devices/<device_id>.json`, one file per Mac. Only
+//! reads and writes the folder it is given; `runtime` decides when.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use serde::{Deserialize, Serialize};
 use crate::storage;
 use super::device::is_valid_id;
 use super::merge::{merge, Merged};
@@ -40,8 +40,9 @@ pub struct ReadReport {
 
 /// Every device file read so far, joined per device. A file that cannot be
 /// read this time leaves its last good version in place, so an unreadable
-/// file never looks like a new pet.
-#[derive(Debug, Clone, Default)]
+/// file never looks like a new pet. Kept locally between launches (#38).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SyncCache {
     devices: BTreeMap<String, DeviceSnapshot>,
 }
@@ -52,6 +53,21 @@ impl SyncCache {
             .entry(snapshot.device_id.clone())
             .or_insert_with(|| DeviceSnapshot::new(&snapshot.device_id))
             .absorb(snapshot);
+    }
+
+    /// Joins another cache; in any order, as often as wanted.
+    pub fn join(&mut self, other: &SyncCache) {
+        for snapshot in other.devices.values() {
+            self.absorb(snapshot);
+        }
+    }
+
+    pub fn device(&self, device_id: &str) -> Option<&DeviceSnapshot> {
+        self.devices.get(device_id)
+    }
+
+    pub fn snapshots(&self) -> impl Iterator<Item = &DeviceSnapshot> {
+        self.devices.values()
     }
 
     /// Reads every `devices/*.json` under `root` into the cache. A copy whose

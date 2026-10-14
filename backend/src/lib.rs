@@ -14,6 +14,7 @@ use game_session::GameSessions;
 use pet::PetState;
 use pet::GameStats;
 use storage::LoadOutcome;
+use sync::{Hardware, SyncRuntime};
 
 /// Shown once when a save was restored from its `.bak` copy.
 pub const WARNING_RECOVERED: &str = "SAVE RECOVERED";
@@ -28,6 +29,8 @@ pub struct AppState {
     pub game_sessions: Mutex<GameSessions>,
     /// Lock after `pet`, and before `stats` when both are held.
     pub companion: Mutex<CompanionState>,
+    /// Lock last: after `pet`, `companion` and `stats`, whichever are held.
+    pub sync: Mutex<SyncRuntime>,
 }
 
 impl AppState {
@@ -43,6 +46,12 @@ impl AppState {
 
     /// `today` is the local date, used to start or settle the companion.
     pub fn load_from(dir: &Path, today: NaiveDate) -> Self {
+        Self::load_with_hardware(dir, today, Hardware::ThisMac)
+    }
+
+    /// `load_from` with the hardware UUID for the sync device id given, so
+    /// tests can run two Macs on one machine.
+    pub fn load_with_hardware(dir: &Path, today: NaiveDate, hardware: Hardware) -> Self {
         let (pet, pet_warning) = resolve(storage::load_state_from(dir), "pet state", PetState::new);
         let (stats, stats_warning) = resolve(storage::load_stats_from(dir), "game stats", GameStats::new);
         // Bond is never shown, so losing it is only logged, not warned about
@@ -58,7 +67,12 @@ impl AppState {
             .max_by_key(|w| *w == WARNING_BACKED_UP)
             .map(str::to_string);
 
-        Self::with(pet, stats, companion, warning)
+        // Off unless SYNC was turned on; then the ledger and cache load too
+        let mut sync = SyncRuntime::load(dir, hardware);
+        sync.hold_stats_if_stopped(&stats);
+        let mut state = Self::with(pet, stats, companion, warning);
+        state.sync = Mutex::new(sync);
+        state
     }
 
     fn with(
@@ -73,6 +87,7 @@ impl AppState {
             load_warning: Mutex::new(load_warning),
             game_sessions: Mutex::new(GameSessions::new()),
             companion: Mutex::new(companion),
+            sync: Mutex::new(SyncRuntime::without_dir()),
         }
     }
 

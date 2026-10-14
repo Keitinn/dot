@@ -18,7 +18,8 @@ fn main() {
             let app_state = AppState::new();
             app.manage(app_state);
 
-            // The pet, the companion's day and passive income move on here, shown or hidden
+            // The pet, the companion's day and passive income move on here, shown or hidden.
+            // With SYNC on, the sync folder is read and written here too
             let handle = app.handle().clone();
             std::thread::Builder::new()
                 .name("dot-tick".into())
@@ -27,7 +28,7 @@ fn main() {
                     // A panic is logged and the next tick still runs, rather than ending the thread silently
                     let ticked = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         let state = handle.state::<AppState>();
-                        commands::tick(&state, commands::Moment::current(), commands::save_dir().as_deref())
+                        commands::tick_and_sync(&state, commands::Moment::current(), commands::save_dir().as_deref())
                     }));
                     match ticked {
                         Ok(Ok(_)) => {}
@@ -100,6 +101,11 @@ fn main() {
             commands::get_companion_settings,
             commands::set_companion_settings,
             commands::companion_onboarding_answer,
+            commands::get_sync_settings,
+            commands::set_sync_settings,
+            commands::sync_now,
+            commands::get_sync_status,
+            commands::sync_choose_pet,
             commands::quit_app,
         ])
         .run(tauri::generate_context!())

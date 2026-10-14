@@ -74,6 +74,29 @@ export class PetAPI {
         return await invoke('companion_onboarding_answer', { answer });
     }
 
+    // { enabled, path: string | null }
+    async getSyncSettings() {
+        return await invoke('get_sync_settings');
+    }
+
+    // update: { path?, enabled? }; rejects with a short message for an invalid folder
+    async setSyncSettings({ path = null, enabled = null } = {}) {
+        return await invoke('set_sync_settings', { path, enabled });
+    }
+
+    // { enabled, last_sync_at, unreadable, error, choice: [{ id, stage, age, mine }] | null }
+    async getSyncStatus() {
+        return await invoke('get_sync_status');
+    }
+
+    async syncNow() {
+        return await invoke('sync_now');
+    }
+
+    async syncChoosePet(petId) {
+        return await invoke('sync_choose_pet', { petId });
+    }
+
     async quitApp() {
         return await invoke('quit_app');
     }

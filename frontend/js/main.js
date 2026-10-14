@@ -3,6 +3,7 @@ import { PetAPI } from './api.js';
 import { GamesUI } from './games.js';
 import { ShopUI } from './shop.js';
 import { CompanionUI } from './companion.js';
+import { SyncUI } from './sync.js';
 import { FAREWELL, deathView, statusText } from './companion-logic.js';
 import { shouldRun } from './visibility.js';
 
@@ -37,6 +38,11 @@ class DotApp {
         );
         // Before the first await, so the focus that opens the popover is not missed
         this.companion = new CompanionUI(this.api, this.renderer, () => this.petState, () => this.updateUI());
+        // A merge or WHICH DOT? can change the pet and the coins
+        this.sync = new SyncUI(this.api, () => {
+            this.updatePetState();
+            this.fetchStats();
+        });
         // After the companion's, so its open() starts before the refresh on focus
         window.addEventListener('focus', () => this.syncRunning());
         window.addEventListener('blur', () => this.syncRunning());
@@ -106,6 +112,7 @@ class DotApp {
     refresh() {
         this.updatePetState();
         this.fetchStats();
+        this.sync.refresh();
     }
 
     async updatePetState() {

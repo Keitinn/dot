@@ -1,6 +1,7 @@
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::MutexGuard;
 use std::time::Instant;
 use chrono::{Local, NaiveDate, Timelike, Utc};
 use crate::{AppState, game_session, pet::{PetState, GameStats, Achievement, achievements, economy}};
@@ -8,6 +9,8 @@ use rand::{rngs::StdRng, SeedableRng};
 use crate::companion::{self, CareKind, CompanionState, OnboardingAnswer, OpenResult, SaidLine, SettingsUpdate, SettingsView};
 use crate::pet::state::{Activity, FEED_COOLDOWN_SECS, PLAY_COOLDOWN_SECS};
 use crate::storage;
+use crate::sync::runtime::{FetchOutcome, READ_TIMEOUT};
+use crate::sync::{SyncRuntime, SyncSettingsView, SyncStatusView};
 
 fn save_pet(pet: &PetState) {
     if let Err(e) = storage::save_state(pet) {
@@ -15,10 +18,26 @@ fn save_pet(pet: &PetState) {
     }
 }
 
-fn save_stats(stats: &GameStats) {
-    if let Err(e) = storage::save_stats(stats) {
-        eprintln!("Failed to save game stats: {}", e);
+fn save_companion_in(dir: Option<&Path>, companion: &CompanionState) {
+    if let Some(dir) = dir {
+        log_save_error("companion", storage::save_companion_in(dir, companion));
     }
+}
+
+fn save_pet_in(dir: Option<&Path>, pet: &PetState) {
+    if let Some(dir) = dir {
+        log_save_error("pet state", storage::save_state_in(dir, pet));
+    }
+}
+
+fn save_stats_in(dir: Option<&Path>, stats: &GameStats) {
+    if let Some(dir) = dir {
+        log_save_error("game stats", storage::save_stats_in(dir, stats));
+    }
+}
+
+fn lock_sync(state: &AppState) -> Result<MutexGuard<'_, SyncRuntime>, String> {
+    state.sync.lock().map_err(|e| e.to_string())
 }
 
 fn save_companion(companion: &CompanionState) {
@@ -86,26 +105,49 @@ fn care(
     Ok(())
 }
 
-/// Shared body of the FEED / PLAY / SLEEP commands.
-fn care_command(
+/// Shared body of the FEED / PLAY / SLEEP commands, saving into `dir`.
+pub(crate) fn care_at(
     state: &AppState,
     kind: CareKind,
     record: fn(&mut GameStats),
+    now: i64,
+    today: NaiveDate,
+    dir: Option<&Path>,
 ) -> Result<ActionResult, String> {
+    // pet → companion → stats → sync, as AppState requires
     let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
-    {
+    let companion = {
         let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
-        care(&mut pet, &mut companion, kind, Utc::now().timestamp(), Local::now().date_naive())?;
-        save_companion(&companion);
-    }
-    save_pet(&pet);
+        care(&mut pet, &mut companion, kind, now, today)?;
+        save_companion_in(dir, &companion);
+        companion
+    };
+    save_pet_in(dir, &pet);
 
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    let earned_before = stats.total_coins_earned;
     record(&mut stats);
     let new_achievements = achievements::check_achievements(&mut stats, &pet);
-    save_stats(&stats);
+    {
+        let mut sync = lock_sync(state)?;
+        if sync.is_on() {
+            sync.record_care(kind, &stats, earned_before);
+            sync.observe_pet(&pet);
+            sync.observe_companion(&companion);
+            sync.observe_stats(&stats);
+            // Before the stats: a ledger that missed this care would take it back at the next merge
+            sync.write();
+        }
+    }
+    drop(companion);
+    save_stats_in(dir, &stats);
 
     Ok(ActionResult::from(&pet, new_achievements))
+}
+
+fn care_command(state: &AppState, kind: CareKind, record: fn(&mut GameStats)) -> Result<ActionResult, String> {
+    let dir = save_dir();
+    care_at(state, kind, record, Utc::now().timestamp(), Local::now().date_naive(), dir.as_deref())
 }
 
 #[derive(Serialize, Clone)]
@@ -169,8 +211,42 @@ impl Moment {
 /// day, achievements (evolution-based ones) and passive income. Called by the
 /// background tick whether or not the popover is shown, and by the UI poll.
 /// Saves into `dir`; with no directory, or when a save fails, it only logs.
+/// With sync on, what it pays goes into the ledger; the folder is left alone.
 pub fn tick(state: &AppState, at: Moment, dir: Option<&Path>) -> Result<PetResponse, String> {
-    // pet → companion → stats, as AppState requires
+    run_tick(state, at, dir, SyncPass::Record)
+}
+
+/// The background tick: `tick`, and with sync on also a look at the folder.
+/// Device files that changed are read and merged into the game, and this
+/// Mac's file is written.
+pub fn tick_and_sync(state: &AppState, at: Moment, dir: Option<&Path>) -> Result<PetResponse, String> {
+    let fetched = fetch_folder(state, false);
+    run_tick(state, at, dir, SyncPass::Full(fetched))
+}
+
+/// SYNC NOW: reads every device file, even if none seems to have changed.
+pub(crate) fn sync_now_at(state: &AppState, at: Moment, dir: Option<&Path>) -> Result<SyncStatusView, String> {
+    let fetched = fetch_folder(state, true);
+    run_tick(state, at, dir, SyncPass::Full(fetched))?;
+    Ok(lock_sync(state)?.status_view())
+}
+
+enum SyncPass {
+    /// Only the ledger: the poll every 5 seconds while the popover is open.
+    Record,
+    /// Merge (with what was read, if anything), write back and write the own file.
+    Full(Option<FetchOutcome>),
+}
+
+/// Reads the folder with no game lock held, so a slow folder never holds up
+/// the popover. None when sync is off or a read is already running.
+fn fetch_folder(state: &AppState, force: bool) -> Option<FetchOutcome> {
+    let job = state.sync.lock().ok()?.begin_fetch(force)?;
+    Some(job.run(READ_TIMEOUT))
+}
+
+fn run_tick(state: &AppState, at: Moment, dir: Option<&Path>, pass: SyncPass) -> Result<PetResponse, String> {
+    // pet → companion → stats → sync, as AppState requires
     let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
     let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
@@ -178,7 +254,29 @@ pub fn tick(state: &AppState, at: Moment, dir: Option<&Path>) -> Result<PetRespo
     pet.update_at(at.now, at.idle_secs);
     companion.advance_day(&pet, at.today);
     let _ = achievements::check_achievements(&mut stats, &pet);
-    stats.accrue_passive(at.now, pet.is_alive);
+    let passive_before = stats.last_passive_time;
+    let passive = stats.accrue_passive(at.now, pet.is_alive);
+
+    {
+        let mut sync = lock_sync(state)?;
+        if sync.is_on() {
+            sync.record_passive(passive_before, stats.last_passive_time, passive);
+            match pass {
+                SyncPass::Record => {
+                    sync.observe_companion(&companion);
+                    sync.observe_stats(&stats);
+                    sync.persist_local();
+                }
+                SyncPass::Full(fetched) => {
+                    if let Some(fetched) = fetched {
+                        sync.finish_fetch(fetched, at.now);
+                    }
+                    sync.apply(&mut pet, &mut companion, &mut stats, at);
+                    sync.write();
+                }
+            }
+        }
+    }
 
     if let Some(dir) = dir {
         log_save_error("pet state", storage::save_state_in(dir, &pet));
@@ -231,17 +329,43 @@ fn revive(pet: &mut PetState, companion: &mut CompanionState, stats: &mut GameSt
     achievements::check_achievements(stats, pet)
 }
 
-#[tauri::command]
-pub fn revive_pet(state: State<AppState>) -> Result<ActionResult, String> {
+pub(crate) fn revive_at(state: &AppState, dir: Option<&Path>) -> Result<ActionResult, String> {
     let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
     let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    let mut sync = lock_sync(state)?;
+    let synced = sync.is_on();
+    if synced {
+        // The last snapshot of the pet that is gone
+        sync.observe_pet(&pet);
+        // RESET on a living pet replaces it on purpose, so the other Macs
+        // must not offer it back at WHICH DOT?. A dead one is not retired: care
+        // given after its death on another Mac still keeps it (design マージ規則)
+        if pet.is_alive {
+            sync.retire_pet(&pet.id);
+        }
+    }
     let new_achievements = revive(&mut pet, &mut companion, &mut stats);
-    save_pet(&pet);
-    save_companion(&companion);
-    save_stats(&stats);
+    if synced {
+        // A new id: the old one stays dead in every device file, so a Mac
+        // that has not heard of the death cannot take the egg for it
+        pet.id = uuid::Uuid::new_v4().to_string();
+        sync.record_revive();
+        sync.observe_pet(&pet);
+        sync.observe_stats(&stats);
+        sync.write();
+    }
+    drop(sync);
+    save_pet_in(dir, &pet);
+    save_companion_in(dir, &companion);
+    save_stats_in(dir, &stats);
 
     Ok(ActionResult::from(&pet, new_achievements))
+}
+
+#[tauri::command]
+pub fn revive_pet(state: State<AppState>) -> Result<ActionResult, String> {
+    revive_at(&state, save_dir().as_deref())
 }
 
 #[tauri::command]
@@ -298,35 +422,77 @@ pub fn report_game_result(
     outcome: String,
     moves: Option<u32>,
 ) -> Result<RewardResult, String> {
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let report = GameReport { token: &token, game: &game, outcome: &outcome, moves };
+    report_game_result_at(&state, report, Instant::now(), &today, save_dir().as_deref())
+}
+
+/// What the UI reports when a mini game ends.
+pub(crate) struct GameReport<'a> {
+    pub token: &'a str,
+    pub game: &'a str,
+    pub outcome: &'a str,
+    pub moves: Option<u32>,
+}
+
+/// `today` is the local date as `YYYY-MM-DD`, for the daily cap. The cap is
+/// per Mac, also with sync on.
+pub(crate) fn report_game_result_at(
+    state: &AppState,
+    report: GameReport,
+    now: Instant,
+    today: &str,
+    dir: Option<&Path>,
+) -> Result<RewardResult, String> {
     let mut sessions = state.game_sessions.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
-    let today = Local::now().format("%Y-%m-%d").to_string();
     let reward = game_session::claim_reward(
-        &mut sessions, &mut stats, &token, &game, &outcome, moves, Instant::now(), &today,
+        &mut sessions, &mut stats, report.token, report.game, report.outcome, report.moves, now, today,
     )?;
-    save_stats(&stats);
+    {
+        let mut sync = lock_sync(state)?;
+        if sync.is_on() {
+            sync.record_earned(reward.earned);
+            sync.observe_stats(&stats);
+            sync.write();
+        }
+    }
+    save_stats_in(dir, &stats);
     Ok(RewardResult { earned: reward.earned, coins: stats.coins, capped: reward.capped })
 }
 
-#[tauri::command]
-pub fn buy_snack(state: State<AppState>, snack_id: String) -> Result<ActionResult, String> {
-    let snack = economy::find_snack(&snack_id).ok_or_else(|| "unknown snack".to_string())?;
+pub(crate) fn buy_snack_at(state: &AppState, snack_id: &str, now: i64, dir: Option<&Path>) -> Result<ActionResult, String> {
+    let snack = economy::find_snack(snack_id).ok_or_else(|| "unknown snack".to_string())?;
 
     let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    let mut sync = lock_sync(state)?;
 
-    if stats.coins < snack.price {
+    // With sync on, the coins of all Macs: a balance below zero buys nothing
+    if stats.coins < snack.price || !sync.can_spend(snack.price, now) {
         return Err(format!("not enough coins ({} needed)", snack.price));
     }
 
     // Validate and apply to the pet first, so coins are only spent when the snack is eaten.
     pet.eat_snack(snack)?;
     stats.try_spend(snack.price);
-    save_pet(&pet);
+    save_pet_in(dir, &pet);
     let new_achievements = achievements::check_achievements(&mut stats, &pet);
-    save_stats(&stats);
+    if sync.is_on() {
+        sync.record_spent(snack.price);
+        sync.observe_pet(&pet);
+        sync.observe_stats(&stats);
+        sync.write();
+    }
+    drop(sync);
+    save_stats_in(dir, &stats);
 
     Ok(ActionResult::from(&pet, new_achievements))
+}
+
+#[tauri::command]
+pub fn buy_snack(state: State<AppState>, snack_id: String) -> Result<ActionResult, String> {
+    buy_snack_at(&state, &snack_id, Utc::now().timestamp(), save_dir().as_deref())
 }
 
 /// What the popover shows when it opens. Bond is never part of it.
@@ -351,9 +517,11 @@ impl From<OpenResult> for CompanionOpenResult {
     }
 }
 
-/// Called once each time the popover opens (the window gains focus).
+/// Called once each time the popover opens (the window gains focus). With
+/// sync on, the folder is read in the background; what it brings shows on
+/// the next poll.
 #[tauri::command]
-pub fn companion_open(state: State<AppState>) -> Result<CompanionOpenResult, String> {
+pub fn companion_open(app: AppHandle, state: State<AppState>) -> Result<CompanionOpenResult, String> {
     let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
     pet.update();
     save_pet(&pet);
@@ -372,7 +540,34 @@ pub fn companion_open(state: State<AppState>) -> Result<CompanionOpenResult, Str
     if result.enabled {
         save_companion(&companion);
     }
+    let synced = {
+        let mut sync = lock_sync(&state)?;
+        if sync.is_on() {
+            // The greeting counts on this Mac before any merge
+            sync.observe_companion(&companion);
+            sync.persist_local();
+        }
+        sync.is_on()
+    };
+    drop(companion);
+    drop(pet);
+    if synced {
+        sync_in_background(app);
+    }
     Ok(result.into())
+}
+
+/// `tick_and_sync` on a thread of its own, so the command returns at once.
+fn sync_in_background(app: AppHandle) {
+    let spawned = std::thread::Builder::new().name("dot-sync-open".into()).spawn(move || {
+        let state = app.state::<AppState>();
+        if let Err(e) = tick_and_sync(&state, Moment::current(), save_dir().as_deref()) {
+            eprintln!("Sync on open failed: {}", e);
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("Could not start the sync on open: {}", e);
+    }
 }
 
 /// The mood while the popover stays open. `enabled` as in `CompanionOpenResult`.
@@ -430,7 +625,92 @@ pub fn companion_onboarding_answer(state: State<AppState>, answer: String) -> Re
     let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
     companion::settings::answer_onboarding(&mut companion.onboarding, answer, Utc::now().timestamp());
     save_companion(&companion);
+    // YES on one Mac is YES on all of them
+    let mut sync = lock_sync(&state)?;
+    if sync.is_on() {
+        sync.observe_companion(&companion);
+        sync.write();
+    }
     Ok(())
+}
+
+// --- SYNC (#38) ---
+
+#[tauri::command]
+pub fn get_sync_settings(state: State<AppState>) -> Result<SyncSettingsView, String> {
+    Ok(lock_sync(&state)?.settings_view())
+}
+
+/// `path` is checked and saved first; an invalid one changes nothing. Then
+/// `enabled` turns sync on or off. Turning it on reads the folder at once.
+pub(crate) fn set_sync_settings_at(
+    state: &AppState,
+    path: Option<&str>,
+    enabled: Option<bool>,
+    at: Moment,
+    dir: Option<&Path>,
+) -> Result<SyncSettingsView, String> {
+    // Checked with no lock held: a slow disk never holds up the pet
+    let folder = path.map(crate::sync::settings::validate_folder).transpose()?;
+    let on = {
+        let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
+        let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
+        let stats = state.stats.lock().map_err(|e| e.to_string())?;
+        let mut sync = lock_sync(state)?;
+        if let Some(folder) = folder {
+            sync.set_folder(folder)?;
+        }
+        match enabled {
+            Some(true) => sync.enable(&mut pet, &mut companion, &stats)?,
+            Some(false) => sync.disable(&stats)?,
+            None => {}
+        }
+        sync.is_on()
+    };
+    if on {
+        run_tick(state, at, dir, SyncPass::Full(fetch_folder(state, true)))?;
+    }
+    Ok(lock_sync(state)?.settings_view())
+}
+
+#[tauri::command(async)]
+pub fn set_sync_settings(
+    state: State<'_, AppState>,
+    path: Option<String>,
+    enabled: Option<bool>,
+) -> Result<SyncSettingsView, String> {
+    set_sync_settings_at(&state, path.as_deref(), enabled, Moment::current(), save_dir().as_deref())
+}
+
+#[tauri::command(async)]
+pub fn sync_now(state: State<'_, AppState>) -> Result<SyncStatusView, String> {
+    sync_now_at(&state, Moment::current(), save_dir().as_deref())
+}
+
+#[tauri::command]
+pub fn get_sync_status(state: State<AppState>) -> Result<SyncStatusView, String> {
+    Ok(lock_sync(&state)?.status_view())
+}
+
+/// `WHICH DOT?`: keeps `pet_id`, retires the other living pets.
+pub(crate) fn choose_pet_at(state: &AppState, pet_id: &str, at: Moment, dir: Option<&Path>) -> Result<SyncStatusView, String> {
+    let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
+    let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
+    let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    let mut sync = lock_sync(state)?;
+    sync.choose(pet_id, &mut pet, &mut companion, &mut stats, at)?;
+    sync.write();
+    let status = sync.status_view();
+    drop(sync);
+    save_pet_in(dir, &pet);
+    save_companion_in(dir, &companion);
+    save_stats_in(dir, &stats);
+    Ok(status)
+}
+
+#[tauri::command(async)]
+pub fn sync_choose_pet(state: State<'_, AppState>, pet_id: String) -> Result<SyncStatusView, String> {
+    choose_pet_at(&state, &pet_id, Moment::current(), save_dir().as_deref())
 }
 
 #[cfg(test)]

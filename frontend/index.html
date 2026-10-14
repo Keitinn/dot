@@ -30,6 +30,16 @@
                     <button id="quiet-off-btn">QUIET OFF</button>
                     <div id="companion-quiet-note" aria-live="polite"></div>
                 </div>
+                <button id="sync-menu-btn" aria-expanded="false" aria-controls="sync-settings">SYNC</button>
+                <div id="sync-settings" class="hidden" role="group" aria-labelledby="sync-menu-btn">
+                    <button id="sync-enabled-btn" aria-pressed="false">SYNC FOLDER</button>
+                    <div class="companion-row sync-path-row">
+                        <input id="sync-path" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="/PATH/TO/FOLDER" aria-label="Sync folder path">
+                        <button id="sync-set-btn">SET</button>
+                    </div>
+                    <button id="sync-now-btn">SYNC NOW</button>
+                    <div id="sync-status" aria-live="polite"></div>
+                </div>
                 <button id="reset-btn">RESET</button>
                 <button id="quit-btn">QUIT</button>
             </div>
@@ -37,6 +47,7 @@
         <div id="pet-container">
             <canvas id="pet-canvas" width="128" height="128"></canvas>
             <div id="companion-bubble" role="status" aria-live="polite"></div>
+            <div id="sync-choice" role="group" aria-label="Which dot?" hidden></div>
         </div>
 
         <div id="stats-container">
