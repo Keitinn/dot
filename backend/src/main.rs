@@ -5,6 +5,7 @@ use tauri::{
     Manager,
     tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
 };
+use std::time::Duration;
 use dot::{AppState, commands};
 
 fn main() {
@@ -15,6 +16,19 @@ fn main() {
             // Initialize app state
             let app_state = AppState::new();
             app.manage(app_state);
+
+            // The pet, the companion's day and passive income move on here, shown or hidden
+            let handle = app.handle().clone();
+            std::thread::Builder::new()
+                .name("dot-tick".into())
+                .spawn(move || loop {
+                    std::thread::sleep(Duration::from_secs(commands::SIGNAL_TICK_SECS));
+                    let state = handle.state::<AppState>();
+                    let at = commands::Moment::current();
+                    if let Err(e) = commands::tick(&state, at, commands::save_dir().as_deref()) {
+                        eprintln!("Tick failed: {}", e);
+                    }
+                })?;
 
             // Set up window blur event to hide when focus is lost
             if let Some(window) = app.get_webview_window("main") {
