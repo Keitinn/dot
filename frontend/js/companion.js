@@ -1,6 +1,7 @@
 import {
     bubbleContent,
     bubbleDeadline,
+    deathView,
     faceMood,
     parseHour,
     shouldAutoDismiss,
@@ -74,8 +75,13 @@ export class CompanionUI {
         return faceMood(this.result, this.getPet());
     }
 
-    /** Puts the current mood (or none) on the renderer. */
+    /** Puts the current mood (or none) on the renderer; a farewell closes the eyes. */
     syncFace() {
+        const death = deathView(this.getPet());
+        if (death) {
+            this.renderer.setFace(death.eyes, { still: true });
+            return;
+        }
         this.renderer.setFace(this.mood(), { reducedMotion: reducedMotion() });
     }
 

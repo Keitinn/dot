@@ -59,6 +59,8 @@ const EYES = {
     cheerful: [[0, 1, 0], [1, 0, 1], [0, 0, 0]],
     blink: [[0, 0, 0], [0, 0, 0], [1, 1, 1]],
 };
+// The farewell holds the eye of a blink
+EYES.closed = EYES.blink;
 
 /** The eye for a mood, or 'blink'. Unknown moods read as calm, as on the backend. */
 export function eyeGrid(mood) {
@@ -81,6 +83,35 @@ export function statusText(pet, mood) {
     const status = (pet && pet.status) || 'content';
     if (!mood || !pet || pet.stage !== 'Adult' || pet.activity !== 'Idle') return status;
     return mood.replace(/_/g, ' ');
+}
+
+// The screens for a pet that died (R10). An adult says goodbye without any
+// word on why; before that it is the GAME OVER the app always had.
+export const FAREWELL = Object.freeze({
+    kind: 'farewell',
+    icon: null,
+    title: 'THANK YOU.',
+    hint: null,
+    button: 'NEW FRIEND?',
+    eyes: 'closed',
+});
+export const GAME_OVER = Object.freeze({
+    kind: 'game_over',
+    icon: 'X_X',
+    title: 'GAME OVER',
+    hint: 'Press button to restart',
+    button: 'NEW PET',
+    eyes: null,
+});
+
+/**
+ * The death screen for the pet, or null while it lives. The stage is kept
+ * at death, so an adult gets the farewell; an unknown stage gets GAME OVER.
+ * The companion settings play no part: death is not a companion feature.
+ */
+export function deathView(pet) {
+    if (!pet || pet.is_alive) return null;
+    return pet.stage === 'Adult' ? FAREWELL : GAME_OVER;
 }
 
 /** Whether a window focus is a new open of the popover. */

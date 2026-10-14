@@ -15,6 +15,9 @@ import {
     statusText,
     shouldCallOpen,
     parseHour,
+    FAREWELL,
+    GAME_OVER,
+    deathView,
 } from '../frontend/js/companion-logic.js';
 
 const adult = (over = {}) => ({ stage: 'Adult', is_alive: true, activity: 'Idle', status: 'content', ...over });
@@ -220,4 +223,73 @@ test('quiet hours accept 0-23 only', () => {
     for (const bad of ['24', '-1', '7.5', '', 'x', null, undefined]) {
         assert.equal(parseHour(bad), null, String(bad));
     }
+});
+
+// Death: the farewell for an adult (R10), GAME OVER before that
+
+const dead = (stage) => adult({ stage, is_alive: false });
+
+test('an adult that died says THANK YOU. with closed eyes and NEW FRIEND?', () => {
+    const view = deathView(dead('Adult'));
+    assert.equal(view, FAREWELL);
+    assert.equal(view.kind, 'farewell');
+    assert.equal(view.title, 'THANK YOU.');
+    assert.equal(view.button, 'NEW FRIEND?');
+    assert.equal(view.eyes, 'closed');
+    // One line only: no X_X and no hint under it
+    assert.equal(view.icon, null);
+    assert.equal(view.hint, null);
+});
+
+test('an egg, baby or child that died shows GAME OVER and NEW PET as before', () => {
+    for (const stage of ['Egg', 'Baby', 'Child', 'Teen']) {
+        const view = deathView(dead(stage));
+        assert.equal(view, GAME_OVER, stage);
+        assert.equal(view.title, 'GAME OVER');
+        assert.equal(view.button, 'NEW PET');
+        assert.equal(view.icon, 'X_X');
+        assert.equal(view.hint, 'Press button to restart');
+        assert.equal(view.eyes, null);
+    }
+});
+
+test('a living pet shows no death screen at all', () => {
+    for (const stage of ['Egg', 'Baby', 'Child', 'Adult']) {
+        assert.equal(deathView(adult({ stage })), null, stage);
+    }
+    assert.equal(deathView(null), null);
+    assert.equal(deathView(undefined), null);
+});
+
+test('a dead pet of unknown stage shows GAME OVER, the old screen', () => {
+    for (const stage of [undefined, null, '', 'adult', 'Elder']) {
+        assert.equal(deathView(dead(stage)), GAME_OVER, String(stage));
+    }
+});
+
+test('the farewell does not depend on the companion being on', () => {
+    // Only the pet is read: master OFF, QUIET or no open result change nothing
+    assert.equal(deathView.length, 1);
+    assert.equal(deathView(dead('Adult')), FAREWELL);
+});
+
+test('the farewell text blames no one and fits on one line', () => {
+    const blame = ['NEGLECT', 'FORGOT', 'FORGET', 'YOU LEFT', 'ALONE', 'WHY', 'SAD', 'GAME OVER',
+        'DIED', 'DEAD', 'DEATH', 'HUNGRY', 'STARV', 'LONELY', 'SORRY', 'MISSED', 'FAULT', 'X_X'];
+    for (const text of [FAREWELL.title, FAREWELL.button]) {
+        for (const word of blame) assert.ok(!text.toUpperCase().includes(word), `${text} has ${word}`);
+        assert.ok(!text.includes('\n'), text);
+        assert.ok(text.length <= LINE_MAX_CHARS, text);
+        assert.deepEqual(splitLine(text), [text], text);
+    }
+});
+
+test('the closed eye is the eye of a blink, held', () => {
+    assert.deepEqual(eyeGrid('closed'), eyeGrid('blink'));
+    assert.notDeepEqual(eyeGrid('closed'), eyeGrid('calm'));
+});
+
+test('the death screens cannot be changed by a caller', () => {
+    assert.ok(Object.isFrozen(FAREWELL));
+    assert.ok(Object.isFrozen(GAME_OVER));
 });
