@@ -16,11 +16,15 @@ pub struct DeviceRecord {
 
 /// This Mac's record in Application Support, created on first use.
 pub fn load_or_create() -> Result<DeviceRecord, String> {
-    let hardware_uuid = platform::hardware_uuid().unwrap_or_else(|| {
+    load_or_create_in(&storage::config_dir()?, &this_hardware_uuid())
+}
+
+/// This Mac's hardware UUID, or empty (logged) when it cannot be read.
+pub fn this_hardware_uuid() -> String {
+    platform::hardware_uuid().unwrap_or_else(|| {
         eprintln!("Hardware UUID is unavailable; a copied device.json will not be detected");
         String::new()
-    });
-    load_or_create_in(&storage::config_dir()?, &hardware_uuid)
+    })
 }
 
 /// Loads `dir/device.json`, or makes a new id. A record made on other

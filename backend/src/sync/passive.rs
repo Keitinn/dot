@@ -51,6 +51,15 @@ impl PassiveLedger {
         };
     }
 
+    /// Drops every slot outside [lo, hi), so a file with a made-up range
+    /// cannot pay for time that has not passed.
+    pub fn clamp_to(&mut self, lo: i64, hi: i64) {
+        for range in &mut self.ranges {
+            *range = (range.0.max(lo), range.1.min(hi));
+        }
+        self.normalize();
+    }
+
     pub fn slot_count(&self) -> u64 {
         self.ranges.iter().map(|&(start, end)| end.abs_diff(start)).sum()
     }
