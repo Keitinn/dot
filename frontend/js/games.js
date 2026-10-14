@@ -11,7 +11,7 @@ import {
     judgeBlackjack,
 } from './games-logic.js';
 
-const HAND_ICON = { rock: '✊', paper: '✋', scissors: '✌' };
+const HAND_ICON = { rock: '✊', paper: '✋', scissors: '✌️' };
 const HAND_LABEL = { rock: 'ROCK', paper: 'PAPER', scissors: 'SCISSORS' };
 const RESULT_TEXT = {
     win: 'YOU WIN!',
