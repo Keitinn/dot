@@ -873,8 +873,8 @@ mod tests {
             }
             now += MINUTE;
             let idle = (now - last_input).max(0) as u64;
-            let mult = mult.unwrap_or_else(|| super::super::needs::stage_decay_mult(pet.stage));
-            pet.update_at_with_mult(now, idle, mult);
+            let step_mult = mult.unwrap_or_else(|| super::super::needs::stage_decay_mult(pet.stage));
+            pet.update_at_with_mult(now, idle, step_mult);
             if at_desk {
                 scheduled += MINUTE;
             } else if idle <= super::super::needs::AWAY_THRESHOLD_SECS {
