@@ -19,6 +19,11 @@ import {
     cardText,
     turnText,
     highLowEndText,
+    lightSchedule,
+    orderText,
+    revealMs,
+    judgeTaps,
+    dotSaysEndText,
 } from './games-logic.js';
 
 const HAND_ICON = { rock: '✊', paper: '✋', scissors: '✌️' };
@@ -30,6 +35,8 @@ const RESULT_TEXT = {
     push: 'PUSH',
     blackjack: 'BLACKJACK!',
 };
+
+const prefersReducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
 const STORE_KEY = 'dot.games.v1';
 // The session clock starts on the backend slightly after Date.now() here.
@@ -214,6 +221,7 @@ export class GamesUI {
         list.appendChild(button('BLACKJACK', () => this.showBlackjack(), 'game-menu-btn'));
         list.appendChild(button('HIT & BLOW', () => this.showHitBlow(), 'game-menu-btn'));
         list.appendChild(button('HIGH & LOW', () => this.showHighLow(), 'game-menu-btn'));
+        list.appendChild(button('DOT SAYS', () => this.showDotSays(), 'game-menu-btn'));
         this.body.appendChild(list);
     }
 
@@ -360,6 +368,103 @@ export class GamesUI {
         );
         this.body.append(el('div', 'game-note', 'IS THE NEXT CARD HIGHER OR LOWER?'), card, last, info, controls, result);
         render(view);
+    }
+
+    // ---------- DOT SAYS ----------
+    async showDotSays() {
+        this.setScreen('DOT SAYS', true);
+        const live = this.liveCheck();
+        const rec = (this.record.dot_says = this.record.dot_says || {});
+        const play = await this.play('dot_says');
+        if (!live()) return;
+        if (!play) return this.showStartFailed(() => this.showDotSays());
+
+        const reduced = prefersReducedMotion();
+        let view = play.result.view;
+        let taps = [];
+        let listening = false;
+
+        const status = el('div', 'game-note', '');
+        const order = el('div', 'game-result', '');
+        const grid = el('div', 'says-grid');
+        const info = el('div', 'game-note', '');
+        const result = el('div', 'game-result', '');
+        const controls = el('div', 'game-row');
+        const pads = [0, 1, 2, 3].map((pad) => {
+            const b = button(String(pad + 1), () => onTap(pad), 'says-pad');
+            grid.appendChild(b);
+            return b;
+        });
+
+        const setListening = (on) => {
+            listening = on;
+            for (const p of pads) p.disabled = !on;
+        };
+        const renderInfo = () => {
+            info.textContent = `ROUND ${view.round}  ${taps.length}/${view.show.length}  BEST ${rec.best ?? '-'}`;
+        };
+
+        // Shows this round's order, then lets the player repeat it.
+        const showRound = async () => {
+            taps = [];
+            setListening(false);
+            status.textContent = 'WATCH';
+            renderInfo();
+            await this.wait(600);
+            if (reduced) {
+                order.textContent = orderText(view.show);
+                await this.wait(revealMs(view.show.length));
+                order.textContent = '';
+            } else {
+                let clock = 0;
+                for (const light of lightSchedule(view.show)) {
+                    await this.wait(light.onAt - clock);
+                    pads[light.pad].classList.add('lit');
+                    await this.wait(light.offAt - light.onAt);
+                    pads[light.pad].classList.remove('lit');
+                    clock = light.offAt;
+                }
+            }
+            status.textContent = 'YOUR TURN';
+            setListening(true);
+        };
+
+        const onTap = async (pad) => {
+            if (!listening) return;
+            taps = [...taps, pad];
+            renderInfo();
+            if (judgeTaps(view.show, taps) === 'more') return;
+            setListening(false);
+            const r = await this.move(play, { type: 'say', order: taps });
+            if (!live()) return;
+            if (!r) {
+                result.textContent = 'TRY AGAIN';
+                showRound();
+                return;
+            }
+            view = r.view;
+            if (r.finished) return finish(r);
+            status.textContent = 'GOOD';
+            showRound();
+        };
+
+        const finish = (r) => {
+            const base = dotSaysEndText(view);
+            status.textContent = '';
+            result.textContent = base;
+            renderInfo();
+            if (rec.best === undefined || view.cleared > rec.best) {
+                rec.best = view.cleared;
+                saveRecord(this.record);
+            }
+            controls.appendChild(button('NEW GAME', () => this.showDotSays()));
+            this.settle(play, 'dot_says', r).then((reward) => {
+                if (live()) result.textContent = base + settleText(reward);
+            });
+        };
+
+        this.body.append(el('div', 'game-note', 'REPEAT THE ORDER DOT SHOWS'), status, order, grid, info, result, controls);
+        showRound();
     }
 
     // ---------- Janken ----------

@@ -638,6 +638,36 @@ body {
     font-size: 20px;
 }
 
+/* DOT SAYS: 4 pads that light by turning black, with no fade */
+.says-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 64px);
+    gap: 10px;
+    justify-content: center;
+    margin: 4px 0;
+}
+
+.says-pad {
+    height: 64px;
+    background: #fff;
+    color: #000;
+    border: 2px solid #000;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    font-weight: 900;
+    cursor: pointer;
+}
+
+.says-pad:disabled {
+    cursor: default;
+    color: #000;
+}
+
+.says-pad.lit {
+    background: #000;
+    color: #fff;
+}
+
 /* Coins & shop */
 #coin-label {
     font-size: 10px;

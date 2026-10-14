@@ -30,6 +30,12 @@ pub fn min_play_time(game: &str, moves: Option<u32>) -> Option<Duration> {
         "hit_blow" => Some((Duration::from_secs(1) * moves.unwrap_or(0)).max(Duration::from_secs(3))),
         // Half a second per call, so a script cannot rush the deck
         "high_low" => Some((Duration::from_millis(500) * moves.unwrap_or(0)).max(Duration::from_secs(2))),
+        // Rounds cleared r showed 1 + 2 + ... + r lights, 0.6 s each
+        "dot_says" => {
+            let r = moves.unwrap_or(0);
+            let lights = r * (r + 1) / 2;
+            Some((Duration::from_millis(600) * lights).max(Duration::from_secs(2)))
+        }
         _ => None,
     }
 }
@@ -180,6 +186,7 @@ pub fn claim_reward(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::minigames::dot_says::DotSays;
     use crate::minigames::high_low::{Card, HighLow};
     use crate::minigames::hit_blow::HitBlow;
     use crate::minigames::{StepInput, View as MiniView};
@@ -610,6 +617,83 @@ mod tests {
         assert_eq!(play(11), play(11));
     }
 
+    const SAYS: [u8; 8] = [1, 3, 0, 2, 2, 1, 0, 3];
+
+    fn dot_says(sessions: &mut GameSessions, t0: Instant) -> String {
+        start_with(sessions, "dot_says", GameState::DotSays(DotSays::with_sequence(SAYS.to_vec())), t0)
+    }
+
+    fn say(order: &[u8]) -> StepInput {
+        StepInput::Say { order: order.to_vec() }
+    }
+
+    #[test]
+    fn dot_says_shows_each_round_and_checks_the_reply() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let mut stats = GameStats::new();
+        let token = dot_says(&mut sessions, t0);
+        for r in 1..=5 {
+            let look = sessions.step(&token, &StepInput::Look, t0).unwrap();
+            let MiniView::DotSays(view) = look.view else { panic!("not dot says") };
+            // Only this round's order is shown, never the next pad
+            assert_eq!(view.show, SAYS[..r].to_vec());
+            sessions.step(&token, &say(&SAYS[..r]), t0).unwrap();
+        }
+        let miss = sessions.step(&token, &say(&[0]), t0).unwrap();
+        assert_eq!((miss.finished, miss.moves, miss.reward), (true, Some(5), Some(3)));
+
+        // The UI claims all 8 rounds
+        let r = claim(&mut sessions, &mut stats, &token, "dot_says", "clear", Some(8), t0 + secs(18)).unwrap();
+
+        assert_eq!(r, GameReward { earned: 3, capped: false });
+    }
+
+    #[test]
+    fn dot_says_refuses_a_half_reply_and_another_games_move() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::with_seed(1);
+        let token = dot_says(&mut sessions, t0);
+        sessions.step(&token, &say(&SAYS[..1]), t0).unwrap();
+
+        assert!(sessions.step(&token, &say(&SAYS[..1]), t0).is_err(), "half of round 2");
+        assert!(sessions.step(&token, &StepInput::High, t0).is_err());
+        let look = sessions.step(&token, &StepInput::Look, t0).unwrap();
+        assert!(!look.finished);
+        let MiniView::DotSays(view) = look.view else { panic!("not dot says") };
+        assert_eq!((view.round, view.cleared), (2, 1));
+    }
+
+    #[test]
+    fn dot_says_must_take_the_time_its_lights_take() {
+        let t0 = Instant::now();
+        // 0 rounds: the 2 s floor; 5 rounds: 1+2+3+4+5 lights x 0.6 s = 9 s
+        for (rounds, min) in [(0usize, secs(2)), (5, secs(9))] {
+            for (elapsed, ok) in [(min - Duration::from_millis(1), false), (min, true)] {
+                let mut sessions = GameSessions::with_seed(1);
+                let mut stats = GameStats::new();
+                let token = dot_says(&mut sessions, t0);
+                for r in 1..=rounds {
+                    sessions.step(&token, &say(&SAYS[..r]), t0).unwrap();
+                }
+                sessions.step(&token, &say(&[(SAYS[0] + 1) % 4]), t0).unwrap();
+                let r = claim(&mut sessions, &mut stats, &token, "dot_says", "x", None, t0 + elapsed);
+                assert_eq!(r.is_ok(), ok, "{rounds} rounds after {elapsed:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn dot_says_is_replayed_by_the_same_seed() {
+        let t0 = Instant::now();
+        let first_round = |seed| {
+            let mut sessions = GameSessions::with_seed(seed);
+            let token = sessions.start("dot_says", t0).unwrap();
+            sessions.step(&token, &StepInput::Look, t0).unwrap()
+        };
+        assert_eq!(first_round(21), first_round(21));
+    }
+
     #[test]
     fn minimum_play_times() {
         assert_eq!(min_play_time("janken", None), Some(secs(1)));
@@ -623,6 +707,10 @@ mod tests {
         assert_eq!(min_play_time("high_low", Some(0)), Some(secs(2)));
         assert_eq!(min_play_time("high_low", Some(4)), Some(secs(2)));
         assert_eq!(min_play_time("high_low", Some(9)), Some(Duration::from_millis(4_500)));
+        assert_eq!(min_play_time("dot_says", Some(0)), Some(secs(2)));
+        assert_eq!(min_play_time("dot_says", Some(1)), Some(secs(2)));
+        assert_eq!(min_play_time("dot_says", Some(3)), Some(Duration::from_millis(3_600)));
+        assert_eq!(min_play_time("dot_says", Some(8)), Some(Duration::from_millis(21_600)));
         assert_eq!(min_play_time("poker", None), None);
     }
 

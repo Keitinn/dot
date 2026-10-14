@@ -113,6 +113,10 @@ export function minPlayMs(game, moves = 0) {
         // Games checked in Rust: `moves` is the count game_step returned when finished
         case 'hit_blow': return Math.max(3000, 1000 * (moves || 0));
         case 'high_low': return Math.max(2000, 500 * (moves || 0));
+        case 'dot_says': {
+            const r = moves || 0;
+            return Math.max(2000, 600 * ((r * (r + 1)) / 2));
+        }
         default: return 0;
     }
 }
@@ -166,6 +170,36 @@ export function turnText(turn) {
 
 export function highLowEndText(end) {
     return HIGH_LOW_END_TEXT[end] || '';
+}
+
+// ---------- DOT SAYS (the order stays in Rust, one round at a time) ----------
+/** One light every 800 ms: slow, well above the 600 ms floor. */
+export const DOT_SAYS_STEP_MS = 800;
+const DOT_SAYS_LIT_MS = 500;
+
+/** When each pad of `show` turns on and off, in ms from the start. */
+export function lightSchedule(show, stepMs = DOT_SAYS_STEP_MS) {
+    return show.map((pad, i) => ({ pad, onAt: i * stepMs, offAt: i * stepMs + DOT_SAYS_LIT_MS }));
+}
+
+/** The order as text for reduced motion: pads 0-3 read as 1-4. */
+export function orderText(show) {
+    return show.map((pad) => pad + 1).join(' ');
+}
+
+/** How long the text order stays up with reduced motion. */
+export function revealMs(length) {
+    return Math.max(1500, 800 * length);
+}
+
+/** 'more' while the taps so far match, 'done' when the round is complete, 'miss' otherwise. */
+export function judgeTaps(show, taps) {
+    for (let i = 0; i < taps.length; i++) if (taps[i] !== show[i]) return 'miss';
+    return taps.length === show.length ? 'done' : 'more';
+}
+
+export function dotSaysEndText(view) {
+    return view.missed ? `MISS - ${view.cleared} ROUNDS` : `ALL ${view.cleared} ROUNDS!`;
 }
 
 /** Suffix for a result line: coins earned, and DAILY LIMIT when the cap cut the reward. */

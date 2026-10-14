@@ -63,6 +63,16 @@ pub fn high_low_reward(streak: u32) -> u64 {
     u64::from(streak.min(5))
 }
 
+/// DOT SAYS, by rounds cleared: 3-4 pay 1, 5-7 pay 3, 8 pay 5; fewer pay nothing.
+pub fn dot_says_reward(rounds: u32) -> u64 {
+    match rounds {
+        0..=2 => 0,
+        3..=4 => 1,
+        5..=7 => 3,
+        _ => 5,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +134,14 @@ mod tests {
         let expected = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 5), (51, 5)];
         for (streak, coins) in expected {
             assert_eq!(high_low_reward(streak), coins, "streak {streak}");
+        }
+    }
+
+    #[test]
+    fn test_dot_says_reward_by_rounds_cleared() {
+        let expected = [(0, 0), (1, 0), (2, 0), (3, 1), (4, 1), (5, 3), (6, 3), (7, 3), (8, 5), (9, 5)];
+        for (rounds, coins) in expected {
+            assert_eq!(dot_says_reward(rounds), coins, "{rounds} rounds");
         }
     }
 

@@ -21,6 +21,12 @@ import {
     cardText,
     turnText,
     highLowEndText,
+    DOT_SAYS_STEP_MS,
+    lightSchedule,
+    orderText,
+    revealMs,
+    judgeTaps,
+    dotSaysEndText,
 } from '../frontend/js/games-logic.js';
 
 const c = (rank, suit = '♠') => ({ rank, suit });
@@ -131,6 +137,10 @@ const RUST_MIN_PLAY_MS = [
     ['high_low', 0, 2000],
     ['high_low', 4, 2000],
     ['high_low', 9, 4500],
+    ['dot_says', 0, 2000],
+    ['dot_says', 1, 2000],
+    ['dot_says', 3, 3600],
+    ['dot_says', 8, 21600],
 ];
 
 test('reward: minimum play time of the Rust-checked games matches game_session.rs', () => {
@@ -182,6 +192,34 @@ test('high & low: the last call and the end read as text', () => {
     assert.equal(highLowEndText('stopped'), 'STOPPED');
     assert.equal(highLowEndText('deck_out'), 'NO CARDS LEFT');
     assert.equal(highLowEndText('max'), 'TOP STREAK!');
+});
+
+test('dot says: lights come one at a time, at least 600 ms apart, never overlapping', () => {
+    const plan = lightSchedule([2, 0, 2]);
+    assert.deepEqual(plan.map((l) => l.pad), [2, 0, 2]);
+    for (let i = 1; i < plan.length; i++) {
+        assert.ok(plan[i].onAt - plan[i - 1].onAt >= 600, 'interval');
+        assert.ok(plan[i].onAt > plan[i - 1].offAt, 'a gap, so the same pad twice reads as two');
+    }
+    assert.ok(DOT_SAYS_STEP_MS >= 600);
+    assert.deepEqual(lightSchedule([]), []);
+});
+
+test('dot says: the order as text for reduced motion, 1-based', () => {
+    assert.equal(orderText([0, 3, 1]), '1 4 2');
+    assert.ok(revealMs(1) >= 1500);
+    assert.ok(revealMs(8) > revealMs(3));
+});
+
+test('dot says: a tap is more, done or a miss', () => {
+    assert.equal(judgeTaps([1, 3, 0], [1]), 'more');
+    assert.equal(judgeTaps([1, 3, 0], [1, 3, 0]), 'done');
+    assert.equal(judgeTaps([1, 3, 0], [1, 2]), 'miss');
+});
+
+test('dot says: the end reads as text', () => {
+    assert.equal(dotSaysEndText({ cleared: 4, missed: true }), 'MISS - 4 ROUNDS');
+    assert.equal(dotSaysEndText({ cleared: 8, missed: false }), 'ALL 8 ROUNDS!');
 });
 
 test('reward: text shows coins and the daily limit', () => {

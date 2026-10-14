@@ -2,12 +2,14 @@
 //! time through `game_step` and sees only what that move reveals; the coins
 //! of a finished game come from this state, never from the UI's report.
 
+pub mod dot_says;
 pub mod high_low;
 pub mod hit_blow;
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
+use dot_says::DotSays;
 use high_low::{Call, HighLow};
 use hit_blow::HitBlow;
 
@@ -25,6 +27,8 @@ pub enum StepInput {
     Low,
     /// HIGH & LOW: take the coins for the streak so far
     Stop,
+    /// DOT SAYS: the pads (0-3) tapped so far this round
+    Say { order: Vec<u8> },
 }
 
 /// A finished game: its coins before the daily cap, and the count
@@ -52,6 +56,7 @@ pub struct StepResult {
 pub enum View {
     HitBlow(hit_blow::View),
     HighLow(high_low::View),
+    DotSays(dot_says::View),
 }
 
 /// A game in progress, with its secret.
@@ -59,6 +64,7 @@ pub enum View {
 pub enum GameState {
     HitBlow(HitBlow),
     HighLow(HighLow),
+    DotSays(DotSays),
 }
 
 impl GameState {
@@ -67,6 +73,7 @@ impl GameState {
         match game {
             "hit_blow" => Some(Self::HitBlow(HitBlow::new(rng))),
             "high_low" => Some(Self::HighLow(HighLow::new(rng))),
+            "dot_says" => Some(Self::DotSays(DotSays::new(rng))),
             _ => None,
         }
     }
@@ -75,6 +82,7 @@ impl GameState {
         match self {
             Self::HitBlow(g) => g.settled(),
             Self::HighLow(g) => g.settled(),
+            Self::DotSays(g) => g.settled(),
         }
     }
 
@@ -95,6 +103,7 @@ impl GameState {
                 g.call(Call::Low)?;
             }
             (Self::HighLow(g), StepInput::Stop) => g.stop()?,
+            (Self::DotSays(g), StepInput::Say { order }) => g.say(order)?,
             _ => return Err("not a move in this game".to_string()),
         }
         Ok(self.result())
@@ -104,6 +113,7 @@ impl GameState {
         match self {
             Self::HitBlow(g) => View::HitBlow(g.view()),
             Self::HighLow(g) => View::HighLow(g.view()),
+            Self::DotSays(g) => View::DotSays(g.view()),
         }
     }
 
