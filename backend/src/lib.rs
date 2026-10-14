@@ -4,6 +4,7 @@ pub mod game_session;
 pub mod pet;
 pub mod signals;
 pub mod storage;
+pub mod sync;
 
 use std::path::Path;
 use std::sync::Mutex;
