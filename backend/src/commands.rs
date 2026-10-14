@@ -1,5 +1,6 @@
 use tauri::{AppHandle, State};
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use chrono::{Local, NaiveDate, Timelike, Utc};
 use crate::{AppState, game_session, pet::{PetState, GameStats, Achievement, achievements, economy}};
@@ -139,24 +140,71 @@ impl ActionResult {
     }
 }
 
-#[tauri::command]
-pub fn get_pet_state(state: State<AppState>) -> Result<PetResponse, String> {
+/// How often the background tick brings the pet up to date (design SIGNAL_TICK).
+/// Short enough that a tick gap never reaches AWAY_THRESHOLD while the app runs.
+pub const SIGNAL_TICK_SECS: u64 = 60;
+
+/// When a tick happens. Taken as an argument so tests can set the time and idle.
+#[derive(Clone, Copy, Debug)]
+pub struct Moment {
+    /// Unix seconds.
+    pub now: i64,
+    /// Seconds since the last user input (F5).
+    pub idle_secs: u64,
+    /// The local date, for the companion's daily settlement.
+    pub today: NaiveDate,
+}
+
+impl Moment {
+    pub fn current() -> Self {
+        Self {
+            now: Utc::now().timestamp(),
+            idle_secs: crate::signals::idle_seconds(),
+            today: Local::now().date_naive(),
+        }
+    }
+}
+
+/// Brings everything that moves with time up to `at`: the pet, the companion's
+/// day, achievements (evolution-based ones) and passive income. Called by the
+/// background tick whether or not the popover is shown, and by the UI poll.
+/// Saves into `dir`; with no directory, or when a save fails, it only logs.
+pub fn tick(state: &AppState, at: Moment, dir: Option<&Path>) -> Result<PetResponse, String> {
+    // pet → companion → stats, as AppState requires
     let mut pet = state.pet.lock().map_err(|e| e.to_string())?;
-    pet.update();
-    save_pet(&pet);
-    {
-        let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
-        companion.advance_day(&pet, Local::now().date_naive());
-        save_companion(&companion);
+    let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
+    let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+
+    pet.update_at(at.now, at.idle_secs);
+    companion.advance_day(&pet, at.today);
+    let _ = achievements::check_achievements(&mut stats, &pet);
+    stats.accrue_passive(at.now, pet.is_alive);
+
+    if let Some(dir) = dir {
+        log_save_error("pet state", storage::save_state_in(dir, &pet));
+        log_save_error("companion", storage::save_companion_in(dir, &companion));
+        log_save_error("game stats", storage::save_stats_in(dir, &stats));
     }
 
-    // Check achievements on poll too (for evolution-based ones)
-    let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
-    let _ = achievements::check_achievements(&mut stats, &pet);
-    stats.accrue_passive(Utc::now().timestamp(), pet.is_alive);
-    save_stats(&stats);
-
     Ok(PetResponse::from(&pet))
+}
+
+fn log_save_error(what: &str, result: Result<(), String>) {
+    if let Err(e) = result {
+        eprintln!("Failed to save {}: {}", what, e);
+    }
+}
+
+/// The save directory for `tick`, or None (logged) when it is unavailable.
+pub fn save_dir() -> Option<PathBuf> {
+    storage::config_dir()
+        .map_err(|e| eprintln!("Save directory unavailable: {}", e))
+        .ok()
+}
+
+#[tauri::command]
+pub fn get_pet_state(state: State<AppState>) -> Result<PetResponse, String> {
+    tick(&state, Moment::current(), save_dir().as_deref())
 }
 
 #[tauri::command]
@@ -571,6 +619,189 @@ mod tests {
         assert!(stats.unlocked.contains(&"first_feed".to_string()));
         assert_eq!((stats.current_streak, stats.longest_streak), (5, 9));
         assert_eq!(stats.total_pets_raised, raised + 1);
+    }
+
+    // --- tick (P3) ---
+
+    const T0: i64 = 1_790_000_000;
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("dot-tick-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn present_at(now: i64) -> Moment {
+        Moment { now, idle_secs: 0, today: today() }
+    }
+
+    /// A living adult at full needs, last updated and paid at T0.
+    fn app_at_t0() -> AppState {
+        let (mut pet, companion) = adult();
+        pet.last_update = T0;
+        pet.activity = Activity::Idle;
+        pet.activity_until = None;
+        let mut stats = GameStats::new();
+        stats.last_passive_time = Some(T0);
+        AppState::with(pet, stats, companion, None)
+    }
+
+    fn json<T: Serialize>(value: &T) -> serde_json::Value {
+        serde_json::to_value(value).unwrap()
+    }
+
+    #[test]
+    fn tick_does_what_the_poll_did() {
+        let app = app_at_t0();
+        app.pet.lock().unwrap().hunger = 50;
+        let mut pet = app.pet.lock().unwrap().clone();
+        let mut companion = app.companion.lock().unwrap().clone();
+        let mut stats = app.stats.lock().unwrap().clone();
+        let at = Moment { now: T0 + 1800, idle_secs: 120, today: today() };
+
+        // The body of get_pet_state before the tick existed, with the same time and idle
+        pet.update_at(at.now, at.idle_secs);
+        companion.advance_day(&pet, at.today);
+        let _ = achievements::check_achievements(&mut stats, &pet);
+        stats.accrue_passive(at.now, pet.is_alive);
+
+        let dir = TempDir::new();
+        let response = tick(&app, at, Some(&dir.0)).unwrap();
+
+        assert_eq!(json(&response), json(&PetResponse::from(&pet)));
+        assert_eq!(json(&*app.pet.lock().unwrap()), json(&pet));
+        assert_eq!(*app.companion.lock().unwrap(), companion);
+        assert_eq!(json(&*app.stats.lock().unwrap()), json(&stats));
+        // The adult unlocks its evolution achievement on the tick, as on the poll
+        assert!(stats.unlocked.contains(&"all_grown_up".to_string()));
+        assert_eq!(stats.coins, 3);
+    }
+
+    #[test]
+    fn tick_saves_what_it_changed() {
+        let app = app_at_t0();
+        let dir = TempDir::new();
+
+        tick(&app, present_at(T0 + 3600), Some(&dir.0)).unwrap();
+
+        let loaded = AppState::load_from(&dir.0, today());
+        assert_eq!(json(&*loaded.pet.lock().unwrap()), json(&*app.pet.lock().unwrap()));
+        assert_eq!(json(&*loaded.stats.lock().unwrap()), json(&*app.stats.lock().unwrap()));
+        assert_eq!(*loaded.companion.lock().unwrap(), *app.companion.lock().unwrap());
+        assert_eq!(loaded.take_load_warning(), None);
+    }
+
+    #[test]
+    fn ticks_while_hidden_keep_the_user_present_and_pay_coins() {
+        let app = app_at_t0();
+        let dir = TempDir::new();
+        let mut expected = app.pet.lock().unwrap().clone();
+        let mult = crate::pet::needs::stage_decay_mult(expected.stage);
+        let hours = 3;
+
+        let mut now = T0;
+        for _ in 0..hours * 60 {
+            now += SIGNAL_TICK_SECS as i64;
+            tick(&app, present_at(now), Some(&dir.0)).unwrap();
+            // (c) one coin per full 600 seconds so far
+            assert_eq!(app.stats.lock().unwrap().coins, ((now - T0) / 600) as u64);
+        }
+
+        let pet = app.pet.lock().unwrap();
+        assert!(pet.is_alive);
+        // (a) every minute used the present rules: 3 h at Adult 0.2 is hunger 100 − 0.04×180,
+        // happiness 100 − 0.03×180, energy 100 − 0.02×180 (92.8 / 94.6 / 96.4, rounded)
+        crate::pet::needs::apply_decay(&mut expected, hours as u64 * 3600, mult);
+        assert_eq!(
+            [pet.hunger, pet.happiness, pet.energy, pet.health],
+            [expected.hunger, expected.happiness, expected.energy, expected.health]
+        );
+        assert_eq!([pet.hunger, pet.happiness, pet.energy, pet.health], [93, 95, 96, 100]);
+        // (b) deep sleep would have stopped happiness after 30 minutes (99 at most)
+        assert!(pet.happiness < 99);
+        assert_eq!(pet.age, PetState::new().age + (hours * 3600) as u64);
+        assert_eq!(app.stats.lock().unwrap().coins, (hours * 6) as u64);
+    }
+
+    #[test]
+    fn ticks_through_a_long_idle_match_one_update_over_the_same_span() {
+        let app = app_at_t0();
+        let mut once = app.pet.lock().unwrap().clone();
+        let span = 3 * 3600;
+
+        // The user stops typing at T0; each tick reads how long it has been
+        let mut now = T0;
+        while now < T0 + span {
+            now += SIGNAL_TICK_SECS as i64;
+            let at = Moment { now, idle_secs: (now - T0) as u64, today: today() };
+            tick(&app, at, None).unwrap();
+        }
+        // The first 30 minutes present, the rest deep sleep, as F5 splits one long gap
+        once.update_at(T0 + span, span as u64);
+
+        let pet = app.pet.lock().unwrap();
+        assert_eq!(
+            [pet.hunger, pet.happiness, pet.energy, pet.health],
+            [once.hunger, once.happiness, once.energy, once.health]
+        );
+        assert!(pet.is_alive);
+    }
+
+    #[test]
+    fn ticks_for_a_dead_pet_change_nothing_and_pay_nothing() {
+        let app = app_at_t0();
+        app.pet.lock().unwrap().is_alive = false;
+        app.stats.lock().unwrap().coins = 7;
+        let dir = TempDir::new();
+        let pet_before = json(&*app.pet.lock().unwrap());
+        let companion_before = app.companion.lock().unwrap().clone();
+
+        let mut now = T0;
+        for _ in 0..120 {
+            now += SIGNAL_TICK_SECS as i64;
+            tick(&app, present_at(now), Some(&dir.0)).unwrap();
+        }
+
+        assert_eq!(json(&*app.pet.lock().unwrap()), pet_before);
+        assert_eq!(*app.companion.lock().unwrap(), companion_before);
+        assert_eq!(app.stats.lock().unwrap().coins, 7);
+        let loaded = AppState::load_from(&dir.0, today());
+        assert_eq!(loaded.take_load_warning(), None);
+        assert!(!loaded.pet.lock().unwrap().is_alive);
+        assert_eq!(loaded.stats.lock().unwrap().coins, 7);
+    }
+
+    #[test]
+    fn tick_without_a_save_directory_still_updates() {
+        let app = app_at_t0();
+
+        tick(&app, present_at(T0 + 600), None).unwrap();
+
+        assert_eq!(app.pet.lock().unwrap().last_update, T0 + 600);
+        assert_eq!(app.stats.lock().unwrap().coins, 1);
+    }
+
+    #[test]
+    fn tick_reports_a_poisoned_lock_instead_of_panicking() {
+        let app = std::sync::Arc::new(app_at_t0());
+        let poisoner = std::sync::Arc::clone(&app);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.stats.lock().unwrap();
+            panic!("poison the stats lock");
+        })
+        .join();
+
+        assert!(tick(&app, present_at(T0 + 600), None).is_err());
     }
 
     #[test]

@@ -5,6 +5,8 @@ use tauri::{
     Manager,
     tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
 };
+use std::panic::AssertUnwindSafe;
+use std::time::Duration;
 use dot::{AppState, commands};
 
 fn main() {
@@ -15,6 +17,24 @@ fn main() {
             // Initialize app state
             let app_state = AppState::new();
             app.manage(app_state);
+
+            // The pet, the companion's day and passive income move on here, shown or hidden
+            let handle = app.handle().clone();
+            std::thread::Builder::new()
+                .name("dot-tick".into())
+                .spawn(move || loop {
+                    std::thread::sleep(Duration::from_secs(commands::SIGNAL_TICK_SECS));
+                    // A panic is logged and the next tick still runs, rather than ending the thread silently
+                    let ticked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        let state = handle.state::<AppState>();
+                        commands::tick(&state, commands::Moment::current(), commands::save_dir().as_deref())
+                    }));
+                    match ticked {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => eprintln!("Tick failed: {}", e),
+                        Err(_) => eprintln!("Tick panicked"),
+                    }
+                })?;
 
             // Set up window blur event to hide when focus is lost
             if let Some(window) = app.get_webview_window("main") {

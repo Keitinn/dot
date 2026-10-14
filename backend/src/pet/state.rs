@@ -85,7 +85,7 @@ impl PetState {
     }
 
     /// `idle_secs` is how long the user has gone without input (F5). Taken as an argument so tests can set it.
-    fn update_at(&mut self, now: i64, idle_secs: u64) {
+    pub(crate) fn update_at(&mut self, now: i64, idle_secs: u64) {
         // The stage at the start of the span decides the whole span, even if the pet evolves during it
         let stage_mult = super::needs::stage_decay_mult(self.stage);
         self.update_at_with_mult(now, idle_secs, stage_mult);

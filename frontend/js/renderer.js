@@ -17,6 +17,7 @@ export class PetRenderer {
         this.animTime = 0; // Continuous animation time
 
         this.running = false;
+        this.frameRequest = null;
 
         // Companion face on the adult (see setFace)
         this.face = null;
@@ -35,6 +36,7 @@ export class PetRenderer {
     }
 
     start(renderCallback) {
+        if (this.running) return;
         this.running = true;
         this.renderCallback = renderCallback;
         this.lastFrameTime = performance.now();
@@ -43,6 +45,9 @@ export class PetRenderer {
 
     stop() {
         this.running = false;
+        // Cancel the pending frame, so a quick stop and start never leaves two loops
+        cancelAnimationFrame(this.frameRequest);
+        this.frameRequest = null;
     }
 
     loop(currentTime = performance.now()) {
@@ -66,7 +71,7 @@ export class PetRenderer {
             this.renderCallback(deltaTime);
         }
 
-        requestAnimationFrame((time) => this.loop(time));
+        this.frameRequest = requestAnimationFrame((time) => this.loop(time));
     }
 
     render(petState) {
