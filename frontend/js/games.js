@@ -161,15 +161,19 @@ export class GamesUI {
         updateScore();
 
         // Each throw is one game: report it with the current session and open the next.
+        // The hands stay locked until the report lands, so throws cannot outpace the
+        // backend's minimum play time or pile up pending sessions.
         let session = this.begin('janken');
-        let round = 0;
         const choices = el('div', 'game-row');
+        const lock = (locked) => {
+            for (const b of choices.children) b.disabled = locked;
+        };
         for (const hand of JANKEN_HANDS) {
             choices.appendChild(
                 button(`${HAND_ICON[hand]}\n${HAND_LABEL[hand]}`, async () => {
                     const played = session;
                     session = this.begin('janken');
-                    const thisRound = ++round;
+                    lock(true);
                     const cpuHand = randomHand();
                     const outcome = judgeJanken(hand, cpuHand);
                     me.textContent = HAND_ICON[hand];
@@ -179,7 +183,8 @@ export class GamesUI {
                     this.bump('janken', outcome);
                     updateScore();
                     const r = await this.reward(played, 'janken', outcome);
-                    if (thisRound === round) result.textContent = RESULT_TEXT[outcome] + rewardText(r);
+                    result.textContent = RESULT_TEXT[outcome] + rewardText(r);
+                    lock(false);
                 }, 'game-btn janken-choice')
             );
         }

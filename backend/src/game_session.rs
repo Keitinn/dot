@@ -320,6 +320,27 @@ mod tests {
 
         assert!(claim(&mut sessions, &mut stats, &token, "janken", "cheat", None, t0 + secs(5)).is_err());
         assert_eq!(stats.coins, 0);
+        // The token is spent even though the outcome was rejected.
+        assert!(claim(&mut sessions, &mut stats, &token, "janken", "win", None, t0 + secs(6)).is_err());
+        assert_eq!(stats.coins, 0);
+    }
+
+    #[test]
+    fn separate_games_share_one_daily_cap() {
+        let t0 = Instant::now();
+        let mut sessions = GameSessions::new();
+        let mut stats = GameStats::new();
+        stats.game_coins_today = 25;
+        stats.game_coins_date = Some(DAY.to_string());
+        let a = sessions.start("blackjack", t0).unwrap();
+        let b = sessions.start("memory", t0).unwrap();
+
+        let first = claim(&mut sessions, &mut stats, &a, "blackjack", "win", None, t0 + secs(3)).unwrap();
+        let second = claim(&mut sessions, &mut stats, &b, "memory", "clear", Some(4), t0 + secs(5)).unwrap();
+
+        assert_eq!(first, GameReward { earned: 5, capped: false });
+        assert_eq!(second, GameReward { earned: 0, capped: true });
+        assert_eq!(stats.coins, 5);
     }
 
     fn play(sessions: &mut GameSessions, stats: &mut GameStats, today: &str) -> GameReward {
