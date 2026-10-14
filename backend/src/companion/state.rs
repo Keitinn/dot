@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::pet::{EvolutionStage, PetState};
 use super::bond::{self, DayCounters};
 use super::consts::*;
+use super::mood::MoodRecord;
 
 /// Every field falls back to its default, so saves from older or newer
 /// versions with missing fields still load.
@@ -32,6 +33,10 @@ pub struct CompanionState {
     pub settings: Settings,
     pub lines: LineHistory,
     pub onboarding: Onboarding,
+    /// The mood last shown, for the hysteresis of `concerned` and the dwell.
+    pub mood: Option<MoodRecord>,
+    /// Highest Bond tier already marked by a `bond_tier` line (0 = none).
+    pub bond_tier_said: u16,
 }
 
 /// Per-device settings. Survive a revive.
@@ -54,6 +59,8 @@ pub struct LineHistory {
     pub recent_ids: Vec<String>,
     /// Unix seconds each category last spoke.
     pub category_last_at: BTreeMap<String, i64>,
+    /// Unix seconds `mood_concerned` last spoke about each need.
+    pub concerned_last_at: BTreeMap<String, i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +120,8 @@ impl Default for CompanionState {
             settings: Settings::default(),
             lines: LineHistory::default(),
             onboarding: Onboarding::Unseen,
+            mood: None,
+            bond_tier_said: 0,
         }
     }
 }
@@ -200,7 +209,7 @@ impl CompanionState {
 }
 
 /// The companion runs only for a living adult (R1).
-fn is_active(pet: &PetState) -> bool {
+pub(crate) fn is_active(pet: &PetState) -> bool {
     pet.stage == EvolutionStage::Adult && pet.is_alive
 }
 
