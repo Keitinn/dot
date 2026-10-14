@@ -278,6 +278,51 @@ mod tests {
     }
 
     #[test]
+    fn a_muted_first_open_uses_up_the_greeting() {
+        // The greeting is once a day by its condition; a muted first open still counts
+        let pet = adult();
+        let mut c = companion(&pet);
+        c.settings.quiet_until = Some(at(14, 9, 0).0 + 60);
+        assert_eq!(open_at(&mut c, &pet, at(14, 9, 0), 0.0).line, None);
+
+        let r = open_at(&mut c, &pet, at(14, 9, 5), 0.0);
+
+        assert_eq!(r.line, None);
+        assert!(c.lines.recent_ids.is_empty());
+    }
+
+    #[test]
+    fn lines_are_said_while_the_reprompt_waits() {
+        let pet = adult();
+        let mut c = companion(&pet);
+        let when = at(14, 9, 0);
+        c.onboarding = Onboarding::Later { until: when.0 + 3 * 24 * H };
+
+        let r = open_at(&mut c, &pet, when, 0.0);
+
+        assert!(!r.prompt);
+        assert_eq!(category_of(&r), Some(Category::GreetFirstToday));
+    }
+
+    #[test]
+    fn a_clock_set_back_neither_breaks_nor_silences() {
+        let pet = adult();
+        let mut c = companion(&pet);
+        open_at(&mut c, &pet, at(14, 18, 0), 0.0);
+        open_at(&mut c, &pet, at(14, 23, 0), 0.0);
+
+        // Back to the morning of the same day: the last open looks 0 seconds ago
+        let r = open_at(&mut c, &pet, at(14, 8, 0), 1.0);
+
+        assert!(r.enabled);
+        assert_eq!(r.mood, Mood::Cheerful);
+        assert_eq!(c.last_open_date, Some(at(14, 0, 0).1.date()));
+        // The return line said at 23:00 is "in the future" and does not block for good
+        let r = open_at(&mut c, &pet, at(14, 13, 0), 0.0);
+        assert_eq!(category_of(&r), Some(Category::ReturnAfterAway));
+    }
+
+    #[test]
     fn quiet_hours_do_not_silence_the_popover() {
         let pet = adult();
         let mut c = companion(&pet);

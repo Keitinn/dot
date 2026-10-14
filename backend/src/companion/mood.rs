@@ -137,10 +137,12 @@ pub fn decide(input: &MoodInput, prev: Option<&MoodRecord>, now: i64, trigger: T
     if mood == prev.mood {
         return *prev;
     }
+    // A start in the future (the clock was set back) counts as dwelt
+    let dwelling = prev.since <= now && now - prev.since < MOOD_MIN_DWELL_SECS;
     let held = trigger == Trigger::Refresh
         && mood != Mood::Concerned
         && prev.mood != Mood::MissedYou
-        && now - prev.since < MOOD_MIN_DWELL_SECS;
+        && dwelling;
     if held {
         *prev
     } else {
@@ -149,7 +151,8 @@ pub fn decide(input: &MoodInput, prev: Option<&MoodRecord>, now: i64, trigger: T
 }
 
 /// The need `concerned` is about: the lowest of those below CONCERNED_EXIT,
-/// ties in the order hunger, happiness, energy, health.
+/// ties in the order hunger, happiness, energy, health. While hysteresis
+/// keeps `concerned`, this can move to another need that is now lower.
 pub fn concerned_need(input: &MoodInput) -> Option<Need> {
     [
         (Need::Hunger, input.hunger),
@@ -362,6 +365,13 @@ mod tests {
             shown = next;
         }
         assert!(changes <= 3, "{} changes", changes);
+    }
+
+    #[test]
+    fn a_clock_set_back_does_not_hold_the_mood() {
+        let was = record(Mood::Cheerful, 10_000);
+        let i = MoodInput { happiness: 40, ..input() };
+        assert_eq!(decide(&i, Some(&was), 5_000, Trigger::Refresh), record(Mood::Calm, 5_000));
     }
 
     #[test]

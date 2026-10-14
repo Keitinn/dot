@@ -307,6 +307,7 @@ pub fn companion_open(state: State<AppState>) -> Result<CompanionOpenResult, Str
     pet.update();
     save_pet(&pet);
 
+    // After `pet`, as AppState requires
     let mut companion = state.companion.lock().map_err(|e| e.to_string())?;
     let local = Local::now();
     let seed = local.timestamp_nanos_opt().unwrap_or_else(|| local.timestamp()) as u64;
