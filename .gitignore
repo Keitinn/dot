@@ -9,8 +9,9 @@ package-lock.json
 # Generated files
 /backend/gen/
 
-# Local settings
-.claude/
+# Local settings (shared .claude/ skills and agents are tracked)
+.claude/settings.local.json
+.claude/CLAUDE.local.md
 
 # macOS
 .DS_Store

@@ -1,0 +1,1 @@
+source: https://github.com/Donchitos/Claude-Code-Game-Studios @ be8993bbc5a1f016bc770b2846ce06272d284526 (MIT). Subset: design skills + director agents. settings.json/hooks/statusline intentionally NOT installed.
