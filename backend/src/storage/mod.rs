@@ -80,7 +80,7 @@ pub fn load_companion_from(dir: &Path) -> LoadOutcome<CompanionState> {
     load_json(&dir.join(COMPANION_FILE))
 }
 
-fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+pub(crate) fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     match fs::read(path) {
         // Unchanged: skip the fsync and keep the older backup.
@@ -95,9 +95,20 @@ fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("could not read {} before saving: {}", path.display(), e)),
     }
+    write_atomic(path, json.as_bytes())
+}
+
+/// Writes `value` atomically without keeping a `.bak`: for files in a shared
+/// folder, where a backup would be one more file for the sync service to copy.
+pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+    write_atomic(path, json.as_bytes())
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     replace_file(&hidden_sibling(path, "tmp"), path, |tmp| {
         let mut file = File::create(tmp)?;
-        file.write_all(json.as_bytes())?;
+        file.write_all(bytes)?;
         file.sync_all()
     })
     .map_err(|e| format!("could not write {}: {}", path.display(), e))
@@ -117,7 +128,7 @@ fn replace_file(
     result
 }
 
-fn load_json<T: DeserializeOwned>(path: &Path) -> LoadOutcome<T> {
+pub(crate) fn load_json<T: DeserializeOwned>(path: &Path) -> LoadOutcome<T> {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
     let main_broken = match read_json(path) {
         Ok(Some(value)) => return LoadOutcome::Loaded(value),

@@ -52,6 +52,12 @@ pub struct PetState {
     pub(crate) energy_frac: f64,
     #[serde(default)]
     pub(crate) health_frac: f64,
+    // When FEED / PLAY / SLEEP last succeeded, and the present seconds since then.
+    // Picks the snapshot to keep when devices are merged (design P7). Older saves lack them: 0.
+    #[serde(default)]
+    pub last_action_at: i64,
+    #[serde(default)]
+    pub present_secs_since_action: u64,
 }
 
 impl PetState {
@@ -77,6 +83,8 @@ impl PetState {
             happiness_frac: 0.0,
             energy_frac: 0.0,
             health_frac: 0.0,
+            last_action_at: 0,
+            present_secs_since_action: 0,
         }
     }
 
@@ -107,6 +115,7 @@ impl PetState {
         // The present part needs the activity as it was, to split at the end of a sleep
         let split = super::needs::split_elapsed_with_idle(elapsed, idle_secs);
         super::needs::apply_decay(self, split.present_secs, stage_mult);
+        self.present_secs_since_action = self.present_secs_since_action.saturating_add(split.present_secs);
 
         // Check if current activity has ended
         if let Some(until) = self.activity_until {
@@ -148,6 +157,7 @@ impl PetState {
         self.last_feed_time = Some(now);
         self.activity = Activity::Eating;
         self.activity_until = Some(now + EATING_DURATION_SECS);
+        self.record_action(now);
     }
 
     pub fn play(&mut self) {
@@ -172,6 +182,12 @@ impl PetState {
         self.last_play_time = Some(now);
         self.activity = Activity::Playing;
         self.activity_until = Some(now + PLAYING_DURATION_SECS);
+        self.record_action(now);
+    }
+
+    fn record_action(&mut self, now: i64) {
+        self.last_action_at = now;
+        self.present_secs_since_action = 0;
     }
 
     /// Apply a purchased snack. Does not touch the FEED cooldown.
@@ -220,6 +236,7 @@ impl PetState {
         let sleep_secs = sleep_hours * 3600;
         self.activity = Activity::Sleeping;
         self.activity_until = Some(now + sleep_secs as i64);
+        self.record_action(now);
     }
 
     /// Computed status string describing what dot is doing
@@ -1008,6 +1025,89 @@ mod tests {
         pet.update_at(T0 + 63 * HOUR, 0);
         assert_eq!(pet.stage, EvolutionStage::Adult);
         assert_stats_near(&pet, [30.0, 95.5, 100.0, 100.0]);
+    }
+
+    // Care time and present time since care, for choosing between devices (design P7)
+    #[test]
+    fn test_feed_and_play_record_the_action_and_reset_present_time() {
+        let mut pet = pet_left_at(50, 50, 50, 100);
+        pet.update_at(T0 + 10 * MINUTE, 0);
+        assert_eq!(pet.present_secs_since_action, 600);
+
+        pet.apply_feed(T0 + 10 * MINUTE);
+        assert_eq!(pet.last_action_at, T0 + 10 * MINUTE);
+        assert_eq!(pet.present_secs_since_action, 0);
+
+        pet.update_at(T0 + 15 * MINUTE, 0);
+        pet.apply_play(T0 + 15 * MINUTE);
+        assert_eq!(pet.last_action_at, T0 + 15 * MINUTE);
+        assert_eq!(pet.present_secs_since_action, 0);
+    }
+
+    #[test]
+    fn test_rejected_care_is_not_an_action() {
+        let mut pet = pet_left_at(50, 50, 50, 100);
+        pet.update_at(T0 + MINUTE, 0);
+        pet.activity = Activity::Sleeping;
+        pet.activity_until = Some(T0 + HOUR);
+        pet.apply_feed(T0 + MINUTE);
+        pet.apply_play(T0 + MINUTE);
+        assert_eq!(pet.last_action_at, 0);
+        assert_eq!(pet.present_secs_since_action, 60);
+    }
+
+    #[test]
+    fn test_sleep_records_the_action() {
+        let mut pet = PetState::new();
+        pet.present_secs_since_action = 99;
+        let before = Utc::now().timestamp();
+        pet.sleep();
+        assert!(pet.last_action_at >= before);
+        assert_eq!(pet.present_secs_since_action, 0);
+
+        // Already asleep: not a new action
+        pet.last_action_at = 5;
+        pet.sleep();
+        assert_eq!(pet.last_action_at, 5);
+    }
+
+    #[test]
+    fn test_only_present_time_counts_since_action() {
+        let mut pet = pet_left_at(100, 100, 100, 100);
+        pet.update_at(T0 + 63 * HOUR, 0);
+        // Only the first 30 minutes of a long gap are present
+        assert_eq!(pet.present_secs_since_action, 30 * MINUTE as u64);
+        pet.update_at(T0 + 63 * HOUR + 5, 0);
+        assert_eq!(pet.present_secs_since_action, 30 * MINUTE as u64 + 5);
+    }
+
+    #[test]
+    fn test_action_tracking_leaves_needs_unchanged() {
+        let mut tracked = pet_left_at(52, 80, 80, 50);
+        tracked.update_at(T0 + 30 * MINUTE, 0);
+        tracked.apply_feed(T0 + 30 * MINUTE);
+        tracked.update_at(T0 + 40 * MINUTE, 0);
+        let mut plain = pet_left_at(52, 80, 80, 50);
+        plain.update_at(T0 + 30 * MINUTE, 0);
+        plain.apply_feed(T0 + 30 * MINUTE);
+        plain.last_action_at = 0;
+        plain.present_secs_since_action = 12_345;
+        plain.update_at(T0 + 40 * MINUTE, 0);
+        assert_eq!(stats(&tracked), stats(&plain));
+        assert_eq!(full_stats(&tracked), full_stats(&plain));
+    }
+
+    #[test]
+    fn test_save_without_action_fields_still_loads() {
+        let mut json = serde_json::to_value(pet_left_at(70, 60, 50, 40)).unwrap();
+        let fields = json.as_object_mut().unwrap();
+        for key in ["last_action_at", "present_secs_since_action"] {
+            assert!(fields.remove(key).is_some(), "{} should be saved", key);
+        }
+        let pet: PetState = serde_json::from_value(json).unwrap();
+        assert_eq!(stats(&pet), [70, 60, 50, 40]);
+        assert_eq!(pet.last_action_at, 0);
+        assert_eq!(pet.present_secs_since_action, 0);
     }
 
     #[test]
