@@ -31,7 +31,7 @@ Grab the latest `.dmg` from [Releases](https://github.com/Keitinn/dot/releases).
 
 ### Gatekeeper bypass
 
-Since the app is not code-signed, macOS will show a warning on first launch. To fix:
+Releases are not code-signed yet (setup: [design/signing-setup.md](design/signing-setup.md)), so macOS will show a warning on first launch. To fix:
 
 ```bash
 xattr -cr /Applications/dot.app
