@@ -1,7 +1,7 @@
 {
   "productName": "dot",
   "version": "1.2.0",
-  "identifier": "com.dot.tamagotchi",
+  "identifier": "io.github.keitinn.dot",
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",

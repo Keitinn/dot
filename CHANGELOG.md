@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+- バンドル ID を `com.dot.tamagotchi` から `io.github.keitinn.dot` に変更した(別のアプリとして扱われる。セーブデータは影響なし)
+- リリースのワークフローに署名と公証の手順を追加した。Secrets が未設定のあいだは、これまでどおり署名なしでビルドする(設定手順は `design/signing-setup.md`)
+
 ### Fixed
 - 依存関係を更新(Tauri 2.9→2.12、`bytes`・`time`・`quick-xml` などの既知の脆弱性を修正版に)
 - Dock にアイコンが出ないようにした(起動時に activation policy を Accessory に設定)

@@ -44,10 +44,58 @@ jobs:
         working-directory: backend
         run: cargo test
 
-      - name: Build for aarch64
+      # Signing needs the Developer ID certificate in the repository secrets (see design/signing-setup.md).
+      # Without it the build is unsigned (ad-hoc), as before
+      - name: Check signing secrets
+        id: signing
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Apple signing secrets are not set. Building an unsigned app"
+          fi
+
+      - name: Write the notarization API key
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/keys/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/keys/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Build (signed and notarized)
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          npx tauri build --target aarch64-apple-darwin
+          npx tauri build --target x86_64-apple-darwin
+
+      - name: Verify the signature and notarization
+        if: steps.signing.outputs.enabled == 'true'
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            app="backend/target/$target/release/bundle/macos/dot.app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+            spctl --assess --type execute --verbose=4 "$app"
+            xcrun stapler validate "$app"
+          done
+
+      - name: Build for aarch64 (unsigned)
+        if: steps.signing.outputs.enabled != 'true'
         run: npx tauri build --target aarch64-apple-darwin
 
-      - name: Build for x86_64
+      - name: Build for x86_64 (unsigned)
+        if: steps.signing.outputs.enabled != 'true'
         run: npx tauri build --target x86_64-apple-darwin
 
       - name: Get version
