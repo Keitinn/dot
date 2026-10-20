@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- 依存関係を見直した。npm は `@tauri-apps/api` 2.12.4・`@tauri-apps/cli` 2.12.3・`@tauri-apps/plugin-store` 2.5.0 に揃え、Rust は `cargo update` と `dirs` 5→7 を反映した。GitHub Actions の `checkout`・`setup-node`・`cache`・`action-gh-release` も最新のメジャーに上げた(`rand` 0.10 は API が変わるため見送り)
 - バンドル ID を `com.dot.tamagotchi` から `io.github.keitinn.dot` に変更した(別のアプリとして扱われる。セーブデータは影響なし)
 - リリースのワークフローに署名と公証の手順を追加した。Secrets が未設定のあいだは、これまでどおり署名なしでビルドする(設定手順は `design/signing-setup.md`)
 
