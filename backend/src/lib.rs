@@ -3,6 +3,7 @@ pub mod companion;
 pub mod game_session;
 pub mod minigames;
 pub mod pet;
+pub mod popover;
 pub mod signals;
 pub mod storage;
 pub mod sync;

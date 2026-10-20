@@ -2,12 +2,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use tauri::{
-    Manager,
+    AppHandle, Manager, Monitor, PhysicalPosition, Position, Rect, Runtime, Size,
     tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
 };
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 use dot::{AppState, commands};
+use dot::popover::{self, IconRect, MonitorArea};
+
+/// Logical width of the popover, as in tauri.conf.json.
+const POPOVER_WIDTH: f64 = 280.0;
 
 fn main() {
     tauri::Builder::default()
@@ -61,6 +65,7 @@ fn main() {
                             button: MouseButton::Left,
                             button_state: MouseButtonState::Up,
                             position,
+                            rect,
                             ..
                         } => {
                             let app = tray.app_handle();
@@ -68,14 +73,10 @@ fn main() {
                                 if window.is_visible().unwrap_or(false) {
                                     let _ = window.hide();
                                 } else {
-                                    // Position window directly below the tray icon
-                                    // Use logical position (divide by scale factor for Retina)
-                                    let scale_factor = window.scale_factor().unwrap_or(2.0);
-                                    let click_x = (position.x / scale_factor) as i32;
-                                    let window_width = 280;
-                                    let x = click_x - (window_width / 2);
-                                    let y = 25.0; // Just below menu bar
-                                    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x: x as f64, y }));
+                                    // With no monitor found the window opens where it last was
+                                    if let Some((x, y)) = popover_origin(app, position, rect) {
+                                        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+                                    }
                                     let _ = window.show();
                                     let _ = window.set_focus();
                                 }
@@ -116,4 +117,60 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// The popover's logical top-left under the clicked tray icon, on the monitor
+/// that icon is on.
+fn popover_origin<R: Runtime>(
+    app: &AppHandle<R>,
+    click: PhysicalPosition<f64>,
+    rect: Rect,
+) -> Option<(f64, f64)> {
+    let click = (click.x, click.y);
+    let cursor = cursor_points(app);
+    // On macOS monitor_from_point takes global points, not physical pixels
+    let found = cursor.and_then(|(x, y)| app.monitor_from_point(x, y).ok().flatten());
+    let monitor = match found {
+        Some(monitor) => monitor_area(&monitor),
+        None => {
+            let monitors: Vec<MonitorArea> =
+                app.available_monitors().ok()?.iter().map(monitor_area).collect();
+            monitors[popover::find_clicked_monitor(&monitors, cursor, click)?]
+        }
+    };
+    Some(popover::popover_position(&monitor, icon_rect(rect), click, POPOVER_WIDTH))
+}
+
+/// The cursor in global points. The tray click can't tell which monitor it is
+/// on by itself (it is scaled by that monitor's factor), but on macOS the
+/// cursor is always scaled by the primary monitor's.
+fn cursor_points<R: Runtime>(app: &AppHandle<R>) -> Option<(f64, f64)> {
+    let cursor = app.cursor_position().ok()?;
+    let scale = app.primary_monitor().ok()??.scale_factor();
+    Some((cursor.x / scale, cursor.y / scale))
+}
+
+fn monitor_area(monitor: &Monitor) -> MonitorArea {
+    let position = monitor.position();
+    let size = monitor.size();
+    MonitorArea {
+        x: position.x as f64,
+        y: position.y as f64,
+        width: size.width as f64,
+        height: size.height as f64,
+        scale: monitor.scale_factor(),
+    }
+}
+
+/// The tray reports its rect in physical pixels; anything else is not trusted.
+fn icon_rect(rect: Rect) -> Option<IconRect> {
+    match (rect.position, rect.size) {
+        (Position::Physical(position), Size::Physical(size)) => Some(IconRect {
+            x: position.x as f64,
+            y: position.y as f64,
+            width: size.width as f64,
+            height: size.height as f64,
+        }),
+        _ => None,
+    }
 }
